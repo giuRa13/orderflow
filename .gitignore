@@ -1,0 +1,63 @@
+# --- Build Outputs ---
+build/
+bin/
+out/
+.cache/
+compile_commands.json
+
+# --- Compiled Binaries/Libraries ---
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.obj
+*.o
+*.pdb
+*.exp
+*.ilk
+
+# --- CMake Generated Files ---
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+*.cmake
+# Exception: keep your custom FindXXX.cmake if you have them in a 'cmake' folder
+!cmake/*.cmake
+
+# --- IDE Specific ---
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.sln
+*.vcxproj
+*.filters
+
+# CLion / IntelliJ
+.idea/
+cmake-build-*/
+
+# --- Project Specific ---
+# Very important: ignore the ImGui layout file
+imgui.ini
+
+# --- OS Specific ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Logs ---
+*.log

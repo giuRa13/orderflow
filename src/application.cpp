@@ -1,0 +1,371 @@
+#include <application.h>
+#include <iostream>
+#include <stdio.h>
+#include <mutex>
+#include <vector>
+#include <nlohmann/json.hpp>
+#include <implot.h>
+#include <implot_internal.h>
+#include <IconsFontAwesome5.h>
+
+
+static void glfw_error_callback(int error, const char* description)
+{
+	fprintf(stderr, "GLFW Error %d: %s\n", error, description);
+}
+
+/*static void MouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    if (!io.WantCaptureMouse)
+    {
+    }
+}
+
+static void CursorPosCallback(GLFWwindow* window, double xpos, double ypos)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    if (!io.WantCaptureMouse)
+    {
+    }
+}*/
+
+static void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    if (!io.WantCaptureKeyboard)
+    {
+    }
+
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
+    glfwSetWindowShouldClose(window, GLFW_TRUE);
+}
+
+
+Application::Application() 
+{
+}
+
+void Application::init()
+{
+	glfwSetErrorCallback(glfw_error_callback);
+	if (!glfwInit())
+		return std::exit(1);
+
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);  // 3.2+ only
+	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);            // 3.0+ only
+
+	window = glfwCreateWindow(window_width, window_height, "GLFW window", nullptr, nullptr);
+	if (window == nullptr)
+		return std::exit(1);
+	glfwMakeContextCurrent(window);
+    glfwSwapInterval(1);
+
+    //glfwSetMouseButtonCallback(window, &MouseButtonCallback);
+    //glfwSetCursorPosCallback(window, &CursorPosCallback);
+    glfwSetKeyCallback(window, &KeyCallback);    
+
+    m_ImGuiLayer.init(window);
+}
+
+Application::~Application()
+{
+    m_ImGuiLayer.shutdown();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+}
+
+void Application::run()
+{
+    m_last_time = glfwGetTime();
+
+    NetworkLayer provider(m_market_data);
+
+    while (!glfwWindowShouldClose(window))
+    {
+        glfwPollEvents();
+
+        double current_time = glfwGetTime();
+        m_delta_time = (float)(current_time - m_last_time);
+        m_last_time = current_time;
+
+        m_frame_count++;
+        m_fps_timer += m_delta_time;
+        if (m_fps_timer >= 1.0) 
+        { 
+            m_current_FPS = (float)m_frame_count;
+            m_frame_count = 0;
+            m_fps_timer = 0.0;
+        }
+
+        manage_connections(provider);
+
+        m_ImGuiLayer.begin();
+        {
+            // --- THE MASTER FRAME LOCK ---
+            // lock the data for the ENTIRE duration of the UI draw calls.
+            // This ensures the Chart, Tape, and CVD all see the EXACT same state for this specific frame.
+            std::lock_guard<std::recursive_mutex> lock(m_market_data.mtx);
+
+            control_panel();
+
+            if (m_candle_chart_module.is_open && m_cvd_module.is_open) 
+            {
+                ImGui::Begin("Market Analysis", &m_candle_chart_module.is_open);
+
+                // --- SHARED HEADER LOGIC ---
+                ImGui::SetNextItemWidth(100);
+                if (ImGui::InputText("##Sym", m_candle_chart_module.symbol_input, sizeof(m_candle_chart_module.symbol_input), ImGuiInputTextFlags_EnterReturnsTrue)) 
+                {
+                    std::string input = m_candle_chart_module.symbol_input;
+                    std::transform(input.begin(), input.end(), input.begin(), ::tolower);
+                    m_candle_chart_module.current_symbol = input;
+                }
+                ImGui::SameLine();
+                std::string upper = m_candle_chart_module.current_symbol;
+                std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+                ImGui::TextDisabled("| %s", upper.c_str());
+
+                ImGui::SameLine(ImGui::GetWindowWidth() - 140); 
+                if (ImGui::Button(ICON_FA_COG " Chart")) 
+                    m_candle_chart_module.open_settings = !m_candle_chart_module.open_settings;
+                ImGui::SameLine();
+                if (ImGui::Button(ICON_FA_COG " CVD")) 
+                    m_cvd_module.open_settings = !m_cvd_module.open_settings;
+                ImGui::Separator();
+
+                m_cvd_module.current_symbol = m_candle_chart_module.current_symbol;
+
+                static float rows[] = {2, 1};
+                if (ImPlot::BeginSubplots("##Linked", 2, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkAllX, rows)) 
+                {
+                    m_candle_chart_module.update_content(m_market_data);
+                    m_cvd_module.update_content(m_market_data);
+                    ImPlot::EndSubplots();
+                }
+                ImGui::End();
+
+                // Ensure the CVD open state stays synced with the master window
+                m_cvd_module.is_open = m_candle_chart_module.is_open;
+            } 
+            else 
+            {
+                if (m_candle_chart_module.is_open) m_candle_chart_module.render_standalone(m_market_data);
+                if (m_cvd_module.is_open) m_cvd_module.render_standalone(m_market_data);
+            }
+
+            if (m_tape_module.is_open) m_tape_module.render_standalone(m_market_data);
+
+            if (m_candle_chart_module.is_open) m_candle_chart_module.render_settings_window(m_market_data);
+            if (m_cvd_module.is_open)         m_cvd_module.render_settings_window(m_market_data);
+            if (m_tape_module.is_open)        m_tape_module.render_settings_window(m_market_data);
+        }
+        m_ImGuiLayer.end();
+
+        glfwSwapBuffers(window);
+    }
+    provider.end();
+}
+
+void Application::manage_connections(NetworkLayer& provider) 
+{
+    std::set<std::string> required_symbols;
+    if (m_candle_chart_module.is_open) required_symbols.insert(m_candle_chart_module.current_symbol);
+    if (m_cvd_module.is_open)   required_symbols.insert(m_cvd_module.current_symbol);
+    if (m_tape_module.is_open)  required_symbols.insert(m_tape_module.current_symbol);
+
+    // If no windows are open, Binance might disconnect, so we can keep a default
+    if (required_symbols.empty()) required_symbols.insert("btcusdt");
+
+    // if the set changed, reconnect
+    if (required_symbols != m_last_subscribed_symbols) 
+    {
+        provider.end();
+        provider.start_multi(required_symbols, m_market_data.m_is_futures);
+        m_last_subscribed_symbols = required_symbols;
+        std::cout << "Reconnecting to: ";
+        for(auto& s : required_symbols) std::cout << s << " ";
+        std::cout << std::endl;
+    }
+}
+
+void Application::control_panel()
+{
+    auto AddSelectionRow = [&](const char* label, bool isActive, std::function<void()> onClick) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        
+        // clickable label spanning the whole row
+        if (ImGui::Selectable(label, false, ImGuiSelectableFlags_SpanAllColumns)) 
+            onClick();
+
+        // centered checkmark 
+        ImGui::TableSetColumnIndex(1);
+        if (isActive) 
+        {
+            float width = ImGui::GetContentRegionAvail().x;
+            float icon_width = ImGui::CalcTextSize(ICON_FA_CHECK).x;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (width - icon_width) * 0.5f);
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 1.0f); 
+            ImGui::TextColored(ImVec4(0.988f, 0.196f, 0.368f, 1.000f), ICON_FA_CHECK);
+        }
+    };
+
+    ImGui::Begin("Control Panel");
+
+    ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.988f, 0.196f, 0.368f, 0.4f));
+    ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.988f, 0.196f, 0.368f, 1.000f));
+    ImGui::PushStyleColor(ImGuiCol_TabHovered, ImVec4(0.988f, 0.196f, 0.368f, 0.5f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(20.0f, 8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_TabRounding, 0.0f);
+    if (ImGui::BeginTabBar("ControlTabs"))
+    {
+        float table_width = 300.0f;
+        static ImGuiTableFlags table_flags = 
+            ImGuiTableFlags_Borders | 
+            ImGuiTableFlags_RowBg | 
+            ImGuiTableFlags_NoHostExtendX;
+
+        // --- TAB COMMONS ---
+        if (ImGui::BeginTabItem("Commons"))
+        {
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.0f));
+            ImGui::Spacing();
+            ImGui::TextDisabled("Performance");
+            ImGui::Text("FPS: %.1f (%.4f s)", m_current_FPS, m_delta_time);
+            ImGui::Spacing();
+            ImGui::Separator();
+
+            ImGui::Spacing();
+            ImGui::Checkbox("Follow Live Price", &m_market_data.follow_live);
+
+            if (ImGui::Button("Clear Chart Data")) 
+            {
+                std::lock_guard<std::recursive_mutex> lock(m_data_mtx);
+                m_market_data.candles.clear();
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::TextDisabled("Colors");
+            ImGui::ColorEdit4("Crosshair", &m_market_data.crosshair_color.x);
+            ImGui::ColorEdit4("Ask Color", &m_market_data.ask_color.x);
+            ImGui::ColorEdit4("Bid Color", &m_market_data.bid_color.x);
+            if (ImGui::Button("Reset Colors")) 
+            {
+                m_market_data.ask_color = ImVec4(0.454f, 0.65f, 0.886f, 1.0f);
+                m_market_data.bid_color = ImVec4(0.666f, 0.227f, 0.215f, 1.0f);
+                m_market_data.crosshair_color = ImVec4(0.7f, 0.7f, 0.7f, 0.8f);
+            }
+
+            ImGui::PopStyleVar();
+            ImGui::EndTabItem();
+        }
+
+        // --- TAB MODULES ---
+        if (ImGui::BeginTabItem("Modules"))
+        {
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.0f));
+            ImGui::Spacing();
+            ImGui::TextDisabled("Available Modules");
+            //ImGui::Separator();
+            ImGui::Spacing();
+
+            if (ImGui::BeginTable("ModulesTable", 2, table_flags, ImVec2(table_width, 0)))
+            {
+                ImGui::TableSetupColumn("Module Name", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn("##Status", ImGuiTableColumnFlags_WidthFixed, 30.0f);
+
+                AddSelectionRow("Tick Chart", m_candle_chart_module.is_open, 
+                                [&](){
+                                    m_candle_chart_module.is_open = !m_candle_chart_module.is_open;
+                                    if(m_candle_chart_module.is_open) ImGui::SetWindowFocus("Tick Chart");
+                                }
+                );
+                AddSelectionRow("CVD Chart", m_cvd_module.is_open,
+                                [&](){
+                                    m_cvd_module.is_open = !m_cvd_module.is_open;
+                                    if(m_cvd_module.is_open) ImGui::SetWindowFocus("CVD Chart");
+                                }
+                );
+                AddSelectionRow("Time & Sales", m_tape_module.is_open,
+                                [&](){
+                                    m_tape_module.is_open = !m_tape_module.is_open;
+                                    if(m_tape_module.is_open) ImGui::SetWindowFocus("Time & Sales");
+                                }
+                );
+                ImGui::EndTable();
+            }
+            ImGui::PopStyleVar(); 
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            if (ImGui::Button("Close All Windows", ImVec2(table_width, 0))) 
+                m_candle_chart_module.is_open = m_cvd_module.is_open = m_tape_module.is_open = false;
+    
+            ImGui::EndTabItem();
+        }
+
+        // --- TAB CONNECTIONS ---
+        if (ImGui::BeginTabItem("Connections"))
+        {
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.0f));
+            ImGui::Spacing();
+            ImGui::TextDisabled("Market Data Source");
+            ImGui::Spacing();
+
+            float table_width = 300.0f;
+            ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(8, 8));
+
+            if (ImGui::BeginTable("ConnectionsTable", 2, table_flags, ImVec2(table_width, 0)))
+            {
+                ImGui::TableSetupColumn("Stream Type", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn("##Status", ImGuiTableColumnFlags_WidthFixed, 30.0f);
+            
+                 AddSelectionRow("Binance Spot", !m_market_data.m_is_futures, 
+                                [&](){m_market_data.m_is_futures = false;}
+                );
+
+                AddSelectionRow("Binance Futures", m_market_data.m_is_futures, 
+                                [&](){m_market_data.m_is_futures = true;}
+                );
+
+                ImGui::EndTable();
+            }
+            ImGui::PopStyleVar();
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            // Reconnect Button
+            // If a reconnect was requested but hasn't happened yet, we show a "Connecting" orange color
+            ImVec4 btn_col = m_market_data.m_reconnect_requested ? ImVec4(0.9f, 0.45f, 0.0f, 1.0f) : ImGui::GetStyle().Colors[ImGuiCol_Button];
+            
+            ImGui::PushStyleColor(ImGuiCol_Button, btn_col);
+            if (ImGui::Button("Apply & Connect", ImVec2(table_width, 35))) 
+            {
+                m_market_data.m_reconnect_requested = true; 
+            }
+            ImGui::PopStyleColor();
+
+            ImGui::Spacing();
+            ImGui::TextDisabled("Note: Reconnecting will clear current buffers.");
+
+            ImGui::PopStyleVar();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar(2);
+    ImGui::End();
+}
+
+
+
+
+
+
