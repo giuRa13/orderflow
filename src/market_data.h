@@ -37,6 +37,9 @@ struct TapeTick {
     double price;
     double quantity;
     bool is_sell;
+
+    double bid_at_time; 
+    double ask_at_time;
 };
 
 struct SymbolData {
@@ -44,6 +47,9 @@ struct SymbolData {
     std::deque<TapeTick> tape;
     double running_cvd = 0;
     double max_tape_qty = 1.0;
+
+    double last_best_bid = 0.0;
+    double last_best_ask = 0.0;
 };
 
 class MarketData
@@ -61,7 +67,7 @@ public:
     // Configuration (Shared across Network and UI)
     double tick_timeframe = 60.0; 
     int max_candles = 500;
-    int max_tape_rows = 500;
+    int m_max_tape_rows = 20000; // for C++ app, storing 10,000 or 50,000 trades in a std::deque is very cheap (only a few megabytes of RAM)
     bool follow_live = true;
 
     // Connections

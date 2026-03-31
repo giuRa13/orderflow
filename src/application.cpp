@@ -113,7 +113,7 @@ void Application::run()
 
             if (m_candle_chart_module.is_open && m_cvd_module.is_open) 
             {
-                ImGui::Begin("Market Analysis", &m_candle_chart_module.is_open);
+                ImGui::Begin("Candle + CVD", &m_candle_chart_module.is_open);
 
                 // --- SHARED HEADER LOGIC ---
                 ImGui::SetNextItemWidth(100);
@@ -171,22 +171,22 @@ void Application::run()
 
 void Application::manage_connections(NetworkLayer& provider) 
 {
-    std::set<std::string> required_symbols;
-    if (m_candle_chart_module.is_open) required_symbols.insert(m_candle_chart_module.current_symbol);
-    if (m_cvd_module.is_open)   required_symbols.insert(m_cvd_module.current_symbol);
-    if (m_tape_module.is_open)  required_symbols.insert(m_tape_module.current_symbol);
+    std::set<std::string> symbols;
+    if (m_candle_chart_module.is_open) symbols.insert(m_candle_chart_module.current_symbol);
+    if (m_cvd_module.is_open)   symbols.insert(m_cvd_module.current_symbol);
+    if (m_tape_module.is_open)  symbols.insert(m_tape_module.current_symbol);
 
     // If no windows are open, Binance might disconnect, so we can keep a default
-    if (required_symbols.empty()) required_symbols.insert("btcusdt");
+    if (symbols.empty()) symbols.insert("btcusdt");
 
     // if the set changed, reconnect
-    if (required_symbols != m_last_subscribed_symbols) 
+    if (symbols != m_last_subscribed_symbols) 
     {
         provider.end();
-        provider.start_multi(required_symbols, m_market_data.m_is_futures);
-        m_last_subscribed_symbols = required_symbols;
-        std::cout << "Reconnecting to: ";
-        for(auto& s : required_symbols) std::cout << s << " ";
+        provider.start_multi(symbols, m_market_data.m_is_futures);
+        m_last_subscribed_symbols = symbols;
+        std::cout << "AggTrade + BookTicker for: ";
+        for(auto& s : symbols) std::cout << s << " ";
         std::cout << std::endl;
     }
 }
