@@ -3,9 +3,9 @@
 BaseModule::BaseModule(const std::string& name) 
     : window_name(name) 
 {
-    memset(symbol_input, 0, sizeof(symbol_input));
-    strncpy(symbol_input, "btcusdt", sizeof(symbol_input));
-    current_symbol = "btcusdt";
+    //memset(symbol_input, 0, sizeof(symbol_input));
+    //strncpy(symbol_input, "btcusdt", sizeof(symbol_input));
+    //current_symbol = "btcusdt";
 }
 
 

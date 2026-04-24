@@ -157,10 +157,12 @@ void Application::run()
             }
 
             if (m_tape_module.is_open) m_tape_module.render_standalone(m_market_data);
+            if (m_dom_module.is_open) m_dom_module.render_standalone(m_market_data);
 
             if (m_candle_chart_module.is_open) m_candle_chart_module.render_settings_window(m_market_data);
             if (m_cvd_module.is_open)         m_cvd_module.render_settings_window(m_market_data);
             if (m_tape_module.is_open)        m_tape_module.render_settings_window(m_market_data);
+            if (m_dom_module.is_open)        m_dom_module.render_settings_window(m_market_data);
         }
         m_ImGuiLayer.end();
 
@@ -175,6 +177,7 @@ void Application::manage_connections(NetworkLayer& provider)
     if (m_candle_chart_module.is_open) symbols.insert(m_candle_chart_module.current_symbol);
     if (m_cvd_module.is_open)   symbols.insert(m_cvd_module.current_symbol);
     if (m_tape_module.is_open)  symbols.insert(m_tape_module.current_symbol);
+    if (m_dom_module.is_open)   symbols.insert(m_dom_module.current_symbol); 
 
     // If no windows are open, Binance might disconnect, so we can keep a default
     if (symbols.empty()) symbols.insert("btcusdt");
@@ -183,9 +186,17 @@ void Application::manage_connections(NetworkLayer& provider)
     if (symbols != m_last_subscribed_symbols) 
     {
         provider.end();
+
+        // Fetch dom snapshots for all required symbols
+        for (const auto& s : symbols) 
+        {
+            m_market_data.get(s).snapshot_loaded = false; // Reset before fetching
+            provider.fetch_dom_snapshot(s, m_market_data.m_is_futures);
+        }
+
         provider.start_multi(symbols, m_market_data.m_is_futures);
         m_last_subscribed_symbols = symbols;
-        std::cout << "AggTrade + BookTicker for: ";
+        std::cout << "[WS] AggTrade + BookTicker + Depth for: ";
         for(auto& s : symbols) std::cout << s << " ";
         std::cout << std::endl;
     }
@@ -244,7 +255,7 @@ void Application::control_panel()
             if (ImGui::Button("Clear Chart Data")) 
             {
                 std::lock_guard<std::recursive_mutex> lock(m_data_mtx);
-                m_market_data.candles.clear();
+                //m_market_data.candles.clear();
             }
 
             ImGui::Spacing();
@@ -294,6 +305,12 @@ void Application::control_panel()
                                 [&](){
                                     m_tape_module.is_open = !m_tape_module.is_open;
                                     if(m_tape_module.is_open) ImGui::SetWindowFocus("Time & Sales");
+                                }
+                );
+                AddSelectionRow("DOM", m_dom_module.is_open,
+                                [&](){
+                                    m_dom_module.is_open = !m_dom_module.is_open;
+                                    if(m_dom_module.is_open) ImGui::SetWindowFocus("DOM");
                                 }
                 );
                 ImGui::EndTable();
@@ -363,8 +380,6 @@ void Application::control_panel()
     ImGui::PopStyleVar(2);
     ImGui::End();
 }
-
-
 
 
 

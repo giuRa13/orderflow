@@ -25,9 +25,8 @@ CMakeScripts/
 Makefile
 cmake_install.cmake
 install_manifest.txt
-*.cmake
 # Exception: keep your custom FindXXX.cmake if you have them in a 'cmake' folder
-!cmake/*.cmake
+#!cmake/*.cmake
 
 # --- IDE Specific ---
 # VS Code

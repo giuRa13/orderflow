@@ -9,6 +9,7 @@
 #include <modules/tape_module.h>
 #include <modules/candle_chart_module.h>
 #include <modules/cvd_module.h>
+#include <modules/dom_module.h>
 
 class Application
 {
@@ -43,8 +44,5 @@ private:
     TapeModule m_tape_module;
 	CandleChartModule m_candle_chart_module;
 	CVDModule m_cvd_module;
-
-	//ImVec4 crosshair_color = {0.7f, 0.7f, 0.7f, 0.8f};
-	//ImVec4 ask_color = {0.454f, 0.65f, 0.886f, 1.0f};
-	//ImVec4 bid_color = {0.666f, 0.227f, 0.215f, 1.0f};
+	DOMModule m_dom_module;
 };

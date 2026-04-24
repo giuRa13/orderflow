@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(cvd LANGUAGES C CXX)
+project(orderflow LANGUAGES C CXX)
 
 set(USE_TLS ON CACHE BOOL "" FORCE) # Binance will reject any connection that isn't wss (encrypted)
 set(USE_MBEDTLS ON CACHE BOOL "" FORCE) 

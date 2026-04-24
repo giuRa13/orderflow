@@ -1,25 +1,30 @@
 #include <network_layer.h>
 
 NetworkLayer::NetworkLayer(MarketData& data) : m_data(data) 
-{}
+{
+    ix::initNetSystem(); 
+}
+
+NetworkLayer::~NetworkLayer()
+{
+    this->end(); 
+    ix::uninitNetSystem();
+}
 
 void NetworkLayer::end()
 {
     m_ws.stop();
-    ix::uninitNetSystem();
 } 
 
 void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_futures) 
-{
-    ix::initNetSystem();
-        
+{        
     std::string base = is_futures ? 
         "wss://fstream.binance.com/stream?streams=" 
         : "wss://stream.binance.com:9443/stream?streams=";
 
     std::string stream_path = "";
     for (auto& s : symbols) 
-        stream_path += s + "@aggTrade/" + s + "@bookTicker/";
+        stream_path += s + "@aggTrade/" + s + "@bookTicker/" + s + "@depth@100ms/";
 
     if (!stream_path.empty()) stream_path.pop_back(); // remove last '/'
 
@@ -29,33 +34,41 @@ void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_fut
         if (msg->type == ix::WebSocketMessageType::Message) 
         {
             auto root = nlohmann::json::parse(msg->str);
+            if (root.find("stream") == root.end()) return; 
             // In combined streams, the actual data is in ["data"]
              // The symbol name is in ["stream"] (e.g. "btcusdt@aggTrade")
             std::string stream_name = root["stream"];
             auto& data = root["data"];
+            std::string symbol = stream_name.substr(0, stream_name.find('@'));
 
-            // Route to the correct processor based on stream type
-            if (stream_name.find("@bookTicker") != std::string::npos) 
+            /*if (stream_name.find("@depth20") != std::string::npos) 
             {
-                process_book_ticker(data);
+                process_depth_data(symbol, data);
+            }*/
+            if (stream_name.find("@depth") != std::string::npos) 
+            {
+                process_depth_diff(symbol, data);
+            }
+            else if (stream_name.find("@bookTicker") != std::string::npos) 
+            {
+                process_book_ticker(symbol, data);
             } 
             else if (stream_name.find("@aggTrade") != std::string::npos) 
             {
-                std::string symbol = stream_name.substr(0, stream_name.find('@'));
                 process_tick_data(symbol, data);
             }
         }
         else if (msg->type == ix::WebSocketMessageType::Open) 
         {
-            std::cout << "Successfully connected to Binance Futures!" << std::endl;
+            std::cout << "[WS] Successfully connected to Binance Futures!" << std::endl;
         } 
         else if (msg->type == ix::WebSocketMessageType::Error)
         {
-            std::cerr << "Error: " << msg->errorInfo.reason << std::endl;
+            std::cerr << "[WS] Error: " << msg->errorInfo.reason << std::endl;
         }
         else if (msg->type == ix::WebSocketMessageType::Close) 
         {
-            std::cout << "Connection Closed." << std::endl;
+            std::cout << "[WS] Connection Closed." << std::endl;
         }
     });
     m_ws.start();
@@ -67,7 +80,9 @@ void NetworkLayer::process_tick_data(const std::string& symbol, const nlohmann::
     {
         double price = std::stod(j["p"].get<std::string>());
         double qty   = std::stod(j["q"].get<std::string>());
-        double time  = j["T"].get<double>() / 1000.0;
+        //double time  = j["T"].get<double>() / 1000.0;
+        long long raw_time = j["T"].get<long long>(); 
+        double time = (double)raw_time / 1000.0;
         bool is_sell = j["m"].get<bool>();
         double delta = is_sell ? -qty : qty;
 
@@ -83,7 +98,7 @@ void NetworkLayer::process_tick_data(const std::string& symbol, const nlohmann::
         if (qty > sData.max_tape_qty) sData.max_tape_qty = qty;
 
         // Update Tape (Create Tape Entry with BBO Snapshot)
-        TapeTick tt;
+        /*TapeTick tt;
         tt.time = time;
         tt.price = price;
         tt.quantity = qty;
@@ -96,6 +111,14 @@ void NetworkLayer::process_tick_data(const std::string& symbol, const nlohmann::
 
         // Update Candles
         double bucket_start = std::floor(time / m_data.tick_timeframe) * m_data.tick_timeframe;
+        */
+        // Filling Tape
+        sData.tape.push_front({time, price, qty, is_sell, sData.last_best_bid, sData.last_best_ask});
+        if (sData.tape.size() > m_data.m_max_tape_rows) sData.tape.pop_back();
+        // Filling Candles (ensure timeframe is not 0)
+        double tf = m_data.tick_timeframe;
+        if (tf <= 0.0) tf = 1.0; 
+        double bucket_start = std::floor(time / tf) * tf;
 
         if (sData.candles.empty() || sData.candles.back().time < bucket_start) 
         {
@@ -124,10 +147,9 @@ void NetworkLayer::process_tick_data(const std::string& symbol, const nlohmann::
     }
 }
 
-void NetworkLayer::process_book_ticker(const nlohmann::json& j)
+void NetworkLayer::process_book_ticker(const std::string& symbol, const nlohmann::json& j)
 {
-    std::string symbol = j["s"].get<std::string>();
-    std::transform(symbol.begin(), symbol.end(), symbol.begin(), ::tolower);
+    if (j.find("b") == j.end() || j.find("a") == j.end()) return;
 
     std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
     SymbolData& sData = m_data.get(symbol);
@@ -136,6 +158,112 @@ void NetworkLayer::process_book_ticker(const nlohmann::json& j)
     sData.last_best_bid = std::stod(j["b"].get<std::string>());
     sData.last_best_ask = std::stod(j["a"].get<std::string>());
 }
+
+void NetworkLayer::fetch_dom_snapshot(const std::string& symbol, bool is_futures) 
+{
+    std::string symUpper = symbol;
+    for (auto & c: symUpper) c = toupper(c);
+
+    std::string baseUrl = is_futures ? "https://fapi.binance.com" : "https://api.binance.com";
+    std::string endpoint = is_futures ? "/fapi/v1/depth" : "/api/v3/depth";
+    std::string url = baseUrl + endpoint + "?symbol=" + symUpper + "&limit=1000";
+
+    std::cout << "[REST] Fetching from: " << url << std::endl;
+
+    ix::HttpClient httpClient;
+    auto args = std::make_shared<ix::HttpRequestArgs>();
+    args->extraHeaders["User-Agent"] = "ORFLterminal/1.0";
+    args->followRedirects = true;
+    auto response = httpClient.get(url, args);
+
+    if (response->statusCode == 200) 
+    {
+        try 
+        {
+            auto j = nlohmann::json::parse(response->body);
+            
+            std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
+            auto& sData = m_data.get(symbol);
+
+            sData.full_asks.clear();
+            sData.full_bids.clear();
+            sData.last_update_id = j["lastUpdateId"].get<long long>();
+
+            for (auto& a : j["asks"]) 
+                sData.full_asks[std::stod(a[0].get<std::string>())] = std::stod(a[1].get<std::string>());
+            for (auto& b : j["bids"]) 
+                sData.full_bids[std::stod(b[0].get<std::string>())] = std::stod(b[1].get<std::string>());
+
+            sData.snapshot_loaded = true;
+            sData.dom_dirty = true;
+            std::cout << "[REST] Snapshot loaded for " << symUpper << " at ID " << sData.last_update_id << std::endl;
+        } 
+        catch (const std::exception& e) 
+        {
+            std::cerr << "[REST] JSON Error: " << e.what() << std::endl;
+        }
+    }
+    else 
+    {
+        // This will now print why it failed
+        std::cerr << "[REST] FAILED! Status: " << response->statusCode << std::endl;
+        std::cerr << "[REST] Error Message: " << response->errorMsg << std::endl;
+        if (!response->body.empty())
+            std::cerr << "[REST] Payload: " << response->body << std::endl;
+    }
+}
+
+//  instead of overwriting the book, we update it. If a quantity is "0", we remove the level
+void NetworkLayer::process_depth_diff(const std::string& symbol, const nlohmann::json& j) 
+{
+    std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
+    auto& sData = m_data.get(symbol);
+
+    // In Binance Futures, the first event should have u >= U and U <= lastUpdateId+1
+    // For simplicity, we just discard any events where the final update ID 'u' 
+    // is older than our current snapshot ID.
+    long long u = j["u"].get<long long>(); // Final update ID in event
+    if (u <= sData.last_update_id) return; 
+
+    // apply Asks
+    for (auto& a : j["a"]) 
+    {
+        double p = std::stod(a[0].get<std::string>());
+        double q = std::stod(a[1].get<std::string>());
+        if (q == 0.0) 
+            sData.full_asks.erase(p);
+        else          
+            sData.full_asks[p] = q;
+    }
+
+    // apply Bids
+    for (auto& b : j["b"]) 
+    {
+        double p = std::stod(b[0].get<std::string>());
+        double q = std::stod(b[1].get<std::string>());
+        if (q == 0.0) 
+            sData.full_bids.erase(p);
+        else          
+            sData.full_bids[p] = q;
+    }
+
+    // update the ID so we know where we are
+    sData.last_update_id = u;
+
+    // Pruning (performance)
+    // Keep 100 levels on each side so the grouping math remains fast
+    while (sData.full_asks.size() > 1000) 
+        sData.full_asks.erase(sData.full_asks.begin()); // erase highest ask
+    while (sData.full_bids.size() > 1000) 
+        sData.full_bids.erase(std::prev(sData.full_bids.end())); // erase lowest bid
+
+    sData.dom_dirty = true; 
+}
+/* 1 - Storage: std::map with 2,000 entries (1k bid + 1k ask) is roughly 120 KB of data. That is nothing for a modern PC.
+*  2 - Aggregation: Your update_content loops through these 2,000 levels to group them.
+*       On a modern CPU, iterating 2,000 doubles and doing a floor + map insert takes about 0.1 to 0.3 milliseconds.
+*       Since this only happens 10 times per second (because of your dom_dirty flag), the impact on your FPS is zero.
+*/
 
  /*void start(const std::string& symbol, bool isFutures) 
 {

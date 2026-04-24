@@ -36,6 +36,7 @@ void CandleChartModule::update_content(MarketData& data)
         if (c.high > max_p) max_p = c.high;
     }
     double range = max_p - min_p;
+    if (range < 0.01) range = 2.0; // Force $2.0 range for BTC/ETH if fla
     min_p -= range * 0.3; // extra padding
     max_p += range * 0.3;
 
@@ -59,7 +60,7 @@ void CandleChartModule::update_content(MarketData& data)
         if (ImPlot::IsPlotHovered() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) 
             data.follow_live = false;
 
-        CommonRender::plot_candlesticks("ETH/USDT", sData.candles.data(), (int)sData.candles.size(), data.tick_timeframe * 0.8, false, data.ask_color, data.bid_color);
+        CommonRender::plot_candlesticks(current_symbol.c_str(), sData.candles.data(), (int)sData.candles.size(), data.tick_timeframe * 0.8, false, data.ask_color, data.bid_color);
 
         double current_price = sData.candles.back().close;
         ImVec4 tag_color = (sData.candles.back().close >= sData.candles.back().open) 
@@ -78,71 +79,6 @@ void CandleChartModule::draw_settings_content(MarketData& data)
     ImGui::Text("Chart Specific Settings");
     ImGui::Checkbox("Show Moving Average", &show_ma); 
 }
-
-/*void CandleChartModule::render(MarketData& data)
-{
-    if (!is_open) return;
-
-    if (data.candles.empty()) 
-    {
-        ImGui::Begin("Tick Chart", &is_open);
-        ImGui::Text("Awaiting Data...");
-        ImGui::End();
-        return;
-    }
-
-    ImGui::Begin("Tick Chart", &is_open);
-
-    // calculate price bounds for Y-axis
-    double min_p = data.candles[0].low;
-    double max_p = data.candles[0].high;
-    for (const auto& c : data.candles)
-    {
-        if (c.low < min_p)  min_p = c.low;
-        if (c.high > max_p) max_p = c.high;
-    }
-    double range = max_p - min_p;
-    min_p -= range * 0.3; // extra padding
-    max_p += range * 0.3;
-
-    if (ImPlot::BeginPlot("##CandlePlot", ImVec2(-1, -1)))
-    {
-        ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);
-        ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_Opposite);
-
-        double latest_time = data.candles.back().time;
-        if (data.follow_live)
-        {
-            // only the last 5 minutes
-            ImPlot::SetupAxisLimits(ImAxis_X1, latest_time - 300, latest_time + 30, ImPlotCond_Always);
-            ImPlot::SetupAxisLimits(ImAxis_Y1, min_p, max_p, ImPlotCond_Always);
-        }
-        else 
-        {
-            // This allows the user to click and drag (manual scroll)
-            ImPlot::SetupAxisLimits(ImAxis_X1, data.candles[0].time, data.candles.back().time, ImPlotCond_Once);
-            ImPlot::SetupAxisLimits(ImAxis_Y1, min_p, max_p, ImPlotCond_Once);
-        }
-
-        if (ImPlot::IsPlotHovered() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) 
-            data.follow_live = false;
-
-        CommonRender::plot_candlesticks("ETH/USDT", data.candles.data(), (int)data.candles.size(), data.tick_timeframe * 0.8, false, data.ask_color, data.bid_color);
-
-        double current_price = data.candles.back().close;
-        ImVec4 tag_color = (data.candles.back().close >= data.candles.back().open) 
-            ? data.ask_color   
-            : data.bid_color;
-        CommonRender::draw_price_line(current_price, tag_color);
-        
-        CommonRender::draw_custom_crosshair(data.crosshair_color);
-
-        ImPlot::EndPlot();
-    }
-
-    ImGui::End();
-}*/
-
 
 /*void Application::candlestick_chart()
 {
