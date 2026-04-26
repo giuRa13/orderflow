@@ -22,7 +22,7 @@ public:
 	void manage_connections(NetworkLayer& provider);
 
 private:
-	void control_panel();
+	void control_panel(NetworkLayer& provider);
 
 private:
 	GLFWwindow* window = nullptr;
@@ -36,8 +36,10 @@ private:
     int   m_frame_count = 0;
     double m_fps_timer = 0.0;
 
-	std::recursive_mutex m_data_mtx;
+	int m_force_tab_index = -1;
+	bool m_show_control_panel = true;
 
+	std::recursive_mutex m_data_mtx;
 	MarketData m_market_data;
 	std::set<std::string> m_last_subscribed_symbols;
 	

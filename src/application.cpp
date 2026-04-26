@@ -102,14 +102,25 @@ void Application::run()
 
         manage_connections(provider);
 
-        m_ImGuiLayer.begin();
+        //m_ImGuiLayer.begin(provider.connection_status);
+        int requested_tab = m_ImGuiLayer.begin(provider.connection_status, m_show_control_panel);
         {
+            if (requested_tab != -1) 
+            {
+                m_show_control_panel = true;
+                m_force_tab_index = requested_tab; 
+                ImGui::SetWindowFocus("Control Panel"); 
+            }
+
             // --- THE MASTER FRAME LOCK ---
             // lock the data for the ENTIRE duration of the UI draw calls.
             // This ensures the Chart, Tape, and CVD all see the EXACT same state for this specific frame.
             std::lock_guard<std::recursive_mutex> lock(m_market_data.mtx);
 
-            control_panel();
+            if (m_show_control_panel) 
+            {
+                control_panel(provider);
+            }
 
             if (m_candle_chart_module.is_open && m_cvd_module.is_open) 
             {
@@ -122,6 +133,8 @@ void Application::run()
                     std::string input = m_candle_chart_module.symbol_input;
                     std::transform(input.begin(), input.end(), input.begin(), ::tolower);
                     m_candle_chart_module.current_symbol = input;
+                    // sync the input buffers too
+                    strcpy(m_cvd_module.symbol_input, m_candle_chart_module.symbol_input);
                 }
                 ImGui::SameLine();
                 std::string upper = m_candle_chart_module.current_symbol;
@@ -173,37 +186,115 @@ void Application::run()
 
 void Application::manage_connections(NetworkLayer& provider) 
 {
+    double now = glfwGetTime();
     std::set<std::string> symbols;
-    if (m_candle_chart_module.is_open) symbols.insert(m_candle_chart_module.current_symbol);
-    if (m_cvd_module.is_open)   symbols.insert(m_cvd_module.current_symbol);
-    if (m_tape_module.is_open)  symbols.insert(m_tape_module.current_symbol);
-    if (m_dom_module.is_open)   symbols.insert(m_dom_module.current_symbol); 
+    
+    static double chart_empty_since = 0;
+    static double tape_empty_since = 0;
+    static double dom_empty_since = 0;
+    static double cvd_empty_since = 0;
+    static double last_reconnect_time = 0;
+    static int retry_count = 0;
 
-    // If no windows are open, Binance might disconnect, so we can keep a default
-    if (symbols.empty()) symbols.insert("btcusdt");
+    bool any_module_stuck = false;
+    bool all_modules_ok = true;
 
-    // if the set changed, reconnect
-    if (symbols != m_last_subscribed_symbols) 
+    auto CollectSymbol = [&](bool is_open, const std::string& sym) {
+        if (is_open) symbols.insert(sym);
+    };
+    CollectSymbol(m_candle_chart_module.is_open, m_candle_chart_module.current_symbol);
+    CollectSymbol(m_cvd_module.is_open,          m_cvd_module.current_symbol);
+    CollectSymbol(m_tape_module.is_open,         m_tape_module.current_symbol);
+    CollectSymbol(m_dom_module.is_open,          m_dom_module.current_symbol);
+
+    if (symbols.empty()) return;
+
+    // --- WATCHDOG LOGIC ---
+    auto ProcessTimer = [&](bool is_open, bool is_empty, double& timer_var) {
+        if (is_open && is_empty) 
+        {
+            all_modules_ok = false;
+            if (timer_var == 0) timer_var = now;
+            else if (now - timer_var > 7.0) any_module_stuck = true;
+        } else 
+        {
+            timer_var = 0; 
+        }
+    };
+    ProcessTimer(m_candle_chart_module.is_open, m_market_data.get(m_candle_chart_module.current_symbol).candles.empty(), chart_empty_since);
+    ProcessTimer(m_cvd_module.is_open,          m_market_data.get(m_cvd_module.current_symbol).candles.empty(),          cvd_empty_since);
+    ProcessTimer(m_tape_module.is_open,         m_market_data.get(m_tape_module.current_symbol).tape.empty(),             tape_empty_since);
+    ProcessTimer(m_dom_module.is_open,          !m_market_data.get(m_dom_module.current_symbol).snapshot_loaded,        dom_empty_since);
+
+    // Bottom bar ball status
+    if (any_module_stuck)      provider.connection_status = 1; 
+    else if (!all_modules_ok)  provider.connection_status = 1; 
+    else                       provider.connection_status = 2; 
+
+    if (all_modules_ok) retry_count = 0;
+
+    // --- RECONNECT TRIGGER ---
+    if (symbols != m_last_subscribed_symbols || m_market_data.m_reconnect_requested || any_module_stuck) 
     {
-        provider.end();
+        // if user manually clicked the button, ignore the 3s/10s rate limit
+        bool manual_override = m_market_data.m_reconnect_requested;
 
-        // Fetch dom snapshots for all required symbols
+        double wait_time = any_module_stuck ? 10.0 : 3.0;
+        if (!manual_override && (now - last_reconnect_time < wait_time)) return;
+        if (manual_override || any_module_stuck) 
+        {
+            if (manual_override) std::cout << "[Network] Manual reconnect requested." << std::endl;
+            else std::cout << "[Watchdog] Data timeout. Restarting..." << std::endl;
+            // RESET EVERYTHING
+            chart_empty_since = tape_empty_since = dom_empty_since = cvd_empty_since = 0;
+            if (manual_override) retry_count = 0;
+        }
+
+        last_reconnect_time = now;
+        m_market_data.m_reconnect_requested = false;
+
+        provider.end(); // Stop WS before doing REST work
+        {
+            // lock here because the NetworkLayer threads might still be alive 
+            // for a few milliseconds while shutting down.
+            std::lock_guard<std::recursive_mutex> lock(m_market_data.mtx);
+            for (const auto& s : symbols) 
+            {
+                auto& sData = m_market_data.get(s);
+                
+                // Clear everything so the UI shows "Loading" and Watchdog starts fresh
+                sData.candles.clear();
+                sData.tape.clear();
+                sData.full_asks.clear();
+                sData.full_bids.clear();
+                sData.ask_sums.clear();
+                sData.bid_sums.clear();
+                
+                sData.snapshot_loaded = false; 
+                sData.dom_dirty = true;
+                sData.running_cvd = 0; 
+            }
+        }
+
+        // Now fetch fresh snapshots and start new WS
         for (const auto& s : symbols) 
         {
-            m_market_data.get(s).snapshot_loaded = false; // Reset before fetching
             provider.fetch_dom_snapshot(s, m_market_data.m_is_futures);
         }
 
         provider.start_multi(symbols, m_market_data.m_is_futures);
         m_last_subscribed_symbols = symbols;
-        std::cout << "[WS] AggTrade + BookTicker + Depth for: ";
+        
+        std::cout << "[WS] Subscriptions restarted for: ";
         for(auto& s : symbols) std::cout << s << " ";
         std::cout << std::endl;
     }
 }
 
-void Application::control_panel()
+void Application::control_panel(NetworkLayer& provider)
 {
+    if (!m_show_control_panel) return;
+
     auto AddSelectionRow = [&](const char* label, bool isActive, std::function<void()> onClick) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
@@ -224,7 +315,11 @@ void Application::control_panel()
         }
     };
 
-    ImGui::Begin("Control Panel");
+    if (!ImGui::Begin("Control Panel", &m_show_control_panel))
+    {
+        ImGui::End();
+        return;
+    }
 
     ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.988f, 0.196f, 0.368f, 0.4f));
     ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.988f, 0.196f, 0.368f, 1.000f));
@@ -240,7 +335,8 @@ void Application::control_panel()
             ImGuiTableFlags_NoHostExtendX;
 
         // --- TAB COMMONS ---
-        if (ImGui::BeginTabItem("Commons"))
+        ImGuiTabItemFlags commons_flags = (m_force_tab_index == 0) ? ImGuiTabItemFlags_SetSelected : 0;
+        if (ImGui::BeginTabItem("Commons", nullptr, commons_flags))
         {
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.0f));
             ImGui::Spacing();
@@ -276,7 +372,8 @@ void Application::control_panel()
         }
 
         // --- TAB MODULES ---
-        if (ImGui::BeginTabItem("Modules"))
+        ImGuiTabItemFlags modules_flags = (m_force_tab_index == 1) ? ImGuiTabItemFlags_SetSelected : 0;
+        if (ImGui::BeginTabItem("Modules", nullptr, modules_flags))
         {
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.0f));
             ImGui::Spacing();
@@ -315,18 +412,19 @@ void Application::control_panel()
                 );
                 ImGui::EndTable();
             }
-            ImGui::PopStyleVar(); 
 
             ImGui::Spacing();
             ImGui::Separator();
             if (ImGui::Button("Close All Windows", ImVec2(table_width, 0))) 
                 m_candle_chart_module.is_open = m_cvd_module.is_open = m_tape_module.is_open = false;
     
+            ImGui::PopStyleVar(); 
             ImGui::EndTabItem();
         }
 
         // --- TAB CONNECTIONS ---
-        if (ImGui::BeginTabItem("Connections"))
+        ImGuiTabItemFlags conn_flags = (m_force_tab_index == 2) ? ImGuiTabItemFlags_SetSelected : 0;
+        if (ImGui::BeginTabItem("Connections", nullptr, conn_flags))
         {
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.0f));
             ImGui::Spacing();
@@ -351,36 +449,51 @@ void Application::control_panel()
 
                 ImGui::EndTable();
             }
-            ImGui::PopStyleVar();
 
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
 
-            // Reconnect Button
-            // If a reconnect was requested but hasn't happened yet, we show a "Connecting" orange color
-            ImVec4 btn_col = m_market_data.m_reconnect_requested ? ImVec4(0.9f, 0.45f, 0.0f, 1.0f) : ImGui::GetStyle().Colors[ImGuiCol_Button];
-            
-            ImGui::PushStyleColor(ImGuiCol_Button, btn_col);
-            if (ImGui::Button("Apply & Connect", ImVec2(table_width, 35))) 
+            ImVec4 pending_col = ImVec4(0.9f, 0.45f, 0.0f, 1.0f);
+            ImVec4 normal_btn_col = ImGui::GetStyle().Colors[ImGuiCol_Button];
+            ImVec4 active_col = m_market_data.m_reconnect_requested ? pending_col : normal_btn_col;
+
+            ImGui::PushStyleColor(ImGuiCol_Button, active_col);
+
+            // Apply & Connect
+            if (ImGui::Button("Apply & Connect", ImVec2(table_width, 0))) 
             {
                 m_market_data.m_reconnect_requested = true; 
             }
+            ImGui::Spacing();
+            // Force Reconnect (Uses the same flag)
+            if (ImGui::Button(ICON_FA_SYNC " Force Reconnect", ImVec2(table_width, 0))) 
+            {
+                m_market_data.m_reconnect_requested = true; 
+            }
+
             ImGui::PopStyleColor();
 
             ImGui::Spacing();
             ImGui::TextDisabled("Note: Reconnecting will clear current buffers.");
+            
+            // Status Info
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::TextDisabled("Status:");
+            ImGui::SameLine();
+            if (provider.connection_status == 2) ImGui::TextColored(ImVec4(0,1,0,1), "HEALTHY");
+            else ImGui::TextColored(ImVec4(1,0.5f,0,1), "STALLED/CONNECTING");
 
-            ImGui::PopStyleVar();
+            ImGui::PopStyleVar(2);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
     }
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar(2);
+    // Reset the force index to -1 after the frame is drawn
+    // so it doesn't "lock" the tab and allow user to click other tabs again.
+    m_force_tab_index = -1;
     ImGui::End();
 }
-
-
-
-

@@ -61,22 +61,22 @@ void TapeModule::update_content(MarketData& data)
             for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
             {
                 //const auto& tick = sData.tape[row];
-                const auto* tick = m_filtered_view[row];
-                ImVec4 color = tick->is_sell ? data.bid_color : data.ask_color;
+                const auto& tick = m_filtered_view[row];
+                ImVec4 color = tick.is_sell ? data.bid_color : data.ask_color;
                 ImGui::TableNextRow();
 
                 // --- BELOW BID / ABOVE ASK  HIGHLIGHTING ---
                 // By placing tape_show_slippage_highlights at the beginning of the if condition, 
                 // C++ will "short-circuit" the logic. This means if the checkbox is unchecked, 
                 // the CPU won't even waste time checking tick.bid_at_time > 0
-                if (tape_show_slippage_highlights && tick->bid_at_time > 0 && tick->ask_at_time > 0) 
+                if (tape_show_slippage_highlights && tick.bid_at_time > 0 && tick.ask_at_time > 0) 
                 {
-                     if (tick->is_sell && tick->price < tick->bid_at_time) 
+                     if (tick.is_sell && tick.price < tick.bid_at_time) 
                         {
                             ImU32 bg = ImGui::ColorConvertFloat4ToU32(ImVec4(data.bid_color.x, data.bid_color.y, data.bid_color.z, 0.20f));
                             ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, bg);
                         }
-                        else if (!tick->is_sell && tick->price > tick->ask_at_time) 
+                        else if (!tick.is_sell && tick.price > tick.ask_at_time) 
                         {
                             ImU32 bg = ImGui::ColorConvertFloat4ToU32(ImVec4(data.ask_color.x, data.ask_color.y, data.ask_color.z, 0.20f));
                             ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, bg);
@@ -85,34 +85,34 @@ void TapeModule::update_content(MarketData& data)
 
                 if (ImGui::TableNextColumn()) 
                 {
-                    int hrs = ((int)tick->time % 86400) / 3600;
-                    int mins = ((int)tick->time % 3600) / 60;
-                    int secs = (int)tick->time % 60;
+                    int hrs = ((int)tick.time % 86400) / 3600;
+                    int mins = ((int)tick.time % 3600) / 60;
+                    int secs = (int)tick.time % 60;
                     ImGui::TextColored(color, "%02d:%02d:%02d", hrs, mins, secs);
                 }
 
                 if (ImGui::TableNextColumn())
-                    ImGui::TextColored(color, "%.2f", tick->price);
+                    ImGui::TextColored(color, "%.2f", tick.price);
 
                 if (ImGui::TableNextColumn()) 
                 {
                     // make large trades bold or bright
-                    if (tick->quantity > 10.0) 
+                    if (tick.quantity > 10.0) 
                     {
                         ImGui::TextDisabled("!"); ImGui::SameLine();
-                        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.f, 1.0f), "%.3f", tick->quantity);
+                        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.f, 1.0f), "%.3f", tick.quantity);
                     } 
                     else 
                     {
-                        ImGui::Text("%.3f", tick->quantity);
+                        ImGui::Text("%.3f", tick.quantity);
                     }
                 }
 
                 if (ImGui::TableNextColumn()) 
                 {
-                    float fraction = (float)(tick->quantity / sData.max_tape_qty);
+                    float fraction = (float)(tick.quantity / sData.max_tape_qty);
                     if (fraction < 0.05f) fraction = 0.005;
-                    ImVec4 bar_color = tick->is_sell 
+                    ImVec4 bar_color = tick.is_sell 
                         ? ImVec4(data.bid_color.x, data.bid_color.y, data.bid_color.z, 0.6f)
                         : ImVec4(data.ask_color.x, data.ask_color.y, data.ask_color.z, 0.6f);
                     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
@@ -128,7 +128,7 @@ void TapeModule::update_content(MarketData& data)
 
                 if (ImGui::TableNextColumn()) 
                 {
-                    if (tick->is_sell) 
+                    if (tick.is_sell) 
                         ImGui::TextColored(color, "SELL");
                     else              
                         ImGui::TextColored(color, "BUY");
@@ -142,36 +142,16 @@ void TapeModule::update_content(MarketData& data)
 void TapeModule::rebuild_filtered_view(SymbolData& sData) 
 {
     m_filtered_view.clear();
-    
     if (sData.tape.empty()) return;
 
-    // Optional: Pre-allocate memory to avoid reallocations
-    m_filtered_view.reserve(sData.tape.size() / 2);
+    m_filtered_view.reserve(sData.tape.size());
 
     for (size_t i = 0; i < sData.tape.size(); ++i) 
     {
         const auto& tick = sData.tape[i];
-
-        //  Apply Size Filter
         if (tick.quantity < m_min_trade_size) continue;
 
-        // Aggregation Logic 
-        if (m_aggregate_by_time && !m_filtered_view.empty()) 
-        {
-            auto last = const_cast<TapeTick*>(m_filtered_view.back());
-
-            // If same side, same price, and within X milliseconds
-            double time_diff = std::abs(tick.time - last->time);
-            if (tick.is_sell == last->is_sell && 
-                tick.price == last->price && 
-                time_diff < (m_aggregation_ms / 1000.0)) 
-            {
-                // Sum the quantity instead of adding a new row
-                last->quantity += tick.quantity;
-                continue; 
-            }
-        }
-        m_filtered_view.push_back(&tick);
+        m_filtered_view.push_back(tick); 
     }
 }
 
@@ -217,4 +197,3 @@ void TapeModule::draw_settings_content(MarketData& data)
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Highlights trades that occurred outside the Best Bid/Offer (Slippage/Aggression)");
 }
-

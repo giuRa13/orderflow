@@ -12,7 +12,7 @@ public:
     ~ImGuiLayer() = default;
 
 	void init(GLFWwindow* window);
-	void begin();
+	int begin(int connection_status, bool& show_control_panel);
 	void end();
     void shutdown();
     void set_theme();
@@ -21,4 +21,6 @@ private:
     GLFWwindow* m_window = nullptr;
     bool show_demo = false;
     bool show_plot_demo = false;
+
+    void render_status_bar(int status, float height);
 };

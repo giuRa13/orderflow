@@ -14,6 +14,7 @@ public:
 private:
     void render_dom_bar(double qty, double max_vol, ImVec4 color, bool right_to_left, bool center_text);
     void render_spread_row(SymbolData& sData, MarketData& data, double last_price);
+    void render_top_ui(MarketData& data, SymbolData& sData);
 
     // states
     std::string m_last_symbol = ""; 

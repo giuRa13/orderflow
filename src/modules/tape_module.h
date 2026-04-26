@@ -16,7 +16,7 @@ private:
 
 private:
     // A "View" of the data to keep the Clipper happy
-    std::vector<const TapeTick*> m_filtered_view;
+    std::vector<TapeTick> m_filtered_view;
     float m_min_trade_size = 0.0f;
     bool m_aggregate_by_time = false;
     float m_aggregation_ms = 100.0f; // Group trades within 100ms

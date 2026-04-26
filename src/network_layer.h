@@ -20,6 +20,8 @@ public:
 
     void fetch_dom_snapshot(const std::string& symbol, bool is_futures);
 
+    int connection_status = 0;
+
 private:
     void process_tick_data(const std::string& symbol, const nlohmann::json& j);
     void process_book_ticker(const nlohmann::json& j);

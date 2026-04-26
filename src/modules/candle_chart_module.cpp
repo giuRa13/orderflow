@@ -36,7 +36,7 @@ void CandleChartModule::update_content(MarketData& data)
         if (c.high > max_p) max_p = c.high;
     }
     double range = max_p - min_p;
-    if (range < 0.01) range = 2.0; // Force $2.0 range for BTC/ETH if fla
+    if (range < 0.00001) range = 1.0; 
     min_p -= range * 0.3; // extra padding
     max_p += range * 0.3;
 

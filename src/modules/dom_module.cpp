@@ -94,34 +94,8 @@ void DOMModule::update_content(MarketData& data)
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY | 
         ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
-    // --- TOP UI -------------------------------------- 
-    if (ImGui::Button("Recenter", ImVec2(100, 0))) 
-    {
-        m_needs_recenter = true;
-    }
-    ImGui::SameLine();
-    float combo_width = 100.0f;
-    float right_pos = ImGui::GetWindowWidth() - combo_width - ImGui::GetStyle().WindowPadding.x;
-    right_pos -= ImGui::GetStyle().ScrollbarSize;
-    ImGui::SetCursorPosX(right_pos);
-    static const char* step_labels[] = { "0.1", "0.2", "0.5", "1.0", "5.0", "10.0" };
-    static double step_values[]      = { 0.1,   0.2,   0.5,   1.0,   5.0,   10.0 };
-    int current_step_idx = 0;
-    for (int n = 0; n < IM_ARRAYSIZE(step_values); n++) 
-    {
-        if (data.dom_step == step_values[n]) 
-        { 
-            current_step_idx = n; 
-            break; 
-        }
-    }
-    ImGui::SetNextItemWidth(combo_width + 4);
-    if (ImGui::Combo("##StepTop", &current_step_idx, step_labels, IM_ARRAYSIZE(step_labels))) 
-    {
-        data.dom_step = step_values[current_step_idx];
-        sData.dom_dirty = true;   // Force math rebuild
-        m_needs_recenter = true;  // Force scroll jump
-    }
+    // TOP UI
+    render_top_ui(data, sData);
 
     // --- DOM TABLE -------------------------------------- 
     if (ImGui::BeginTable("##dom", col_number, flags, ImVec2(0, -1))) 
@@ -167,7 +141,6 @@ void DOMModule::update_content(MarketData& data)
             {
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, price_bg, 0);
                 line_pos = ImGui::GetCursorScreenPos();
-                if (i > 0) line_pos.y += row_h; // Ask Edge
                 line_ready = true;
             }
 
@@ -191,7 +164,18 @@ void DOMModule::update_content(MarketData& data)
         }
         
         if (line_ready) 
-            draw_list->AddLine(line_pos, ImVec2(line_pos.x + ImGui::GetWindowWidth(), line_pos.y), price_bg, 2.5f);
+        {
+            float x_start = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x;
+            float x_end   = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+            
+            // Draw the line at the captured Y position
+            draw_list->AddLine(
+                ImVec2(x_start, line_pos.y), 
+                ImVec2(x_end, line_pos.y), 
+                price_bg, 
+                2.5f
+            );
+        }
 
         ImGui::EndTable();
     }
@@ -204,6 +188,7 @@ void DOMModule::render_dom_bar(double qty, double max_vol, ImVec4 color, bool ri
     ImVec2 pos = ImGui::GetCursorScreenPos();
 
     ImGui::Dummy(size);
+    if (qty <= 0.0000001) return; 
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
     float fraction = (float)(qty / max_vol);
@@ -238,6 +223,60 @@ void DOMModule::render_dom_bar(double qty, double max_vol, ImVec4 color, bool ri
 
     float text_y = pos.y + (size.y - text_size.y) * 0.5f;
     draw_list->AddText(ImVec2(text_x, text_y), IM_COL32_WHITE, buf);
+}
+
+void DOMModule::render_top_ui(MarketData& data, SymbolData& sData)
+{
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 3));
+    
+    // LEFT SIDE
+    static const char* step_labels[] = { "0.1", "0.2", "0.5", "1.0", "5.0", "10.0" };
+    static double step_values[]      = { 0.1,   0.2,   0.5,   1.0,   5.0,   10.0 };
+    int current_step_idx = 4;
+    for (int n = 0; n < IM_ARRAYSIZE(step_values); n++) 
+        if (data.dom_step == step_values[n]) { current_step_idx = n; break; }
+
+    ImGui::SetNextItemWidth(126.0f); 
+    if (ImGui::Combo("##StepTop", &current_step_idx, step_labels, IM_ARRAYSIZE(step_labels))) 
+    {
+        data.dom_step = step_values[current_step_idx];
+        sData.dom_dirty = true;
+        m_needs_recenter = true;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Price Grouping Step");
+
+    // RIGHT SIDE
+    ImGui::SameLine();
+    float buttons_area_width = 72.0f; 
+    float right_pos = ImGui::GetWindowWidth() - buttons_area_width - ImGui::GetStyle().WindowPadding.x;
+    if (ImGui::GetScrollMaxY() > 0) right_pos -= ImGui::GetStyle().ScrollbarSize;
+    ImGui::SetCursorPosX(right_pos);
+
+    bool was_auto_scroll_active = m_auto_scroll; 
+    if (was_auto_scroll_active) 
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.988f, 0.196f, 0.368f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.988f, 0.196f, 0.368f, 0.8f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.988f, 0.196f, 0.368f, 0.6f));
+    }
+
+    if (ImGui::Button(m_auto_scroll ? ICON_FA_LOCK : ICON_FA_LOCK_OPEN, ImVec2(32, 0))) 
+    {
+        m_auto_scroll = !m_auto_scroll;
+        if (m_auto_scroll) m_needs_recenter = true;
+    }
+    if (was_auto_scroll_active) ImGui::PopStyleColor(3); 
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(m_auto_scroll ? "Auto-Center: ON" : "Auto-Center: OFF");
+
+    ImGui::SameLine();
+    if (ImGui::Button(ICON_FA_CROSSHAIRS, ImVec2(32, 0))) 
+    {
+        m_needs_recenter = true;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Recenter Now");
+
+    ImGui::PopStyleVar(); // Pop FramePadding
+    ImGui::Separator();
 }
 
 void DOMModule::render_spread_row(SymbolData& sData, MarketData& data, double last_price)
@@ -277,10 +316,9 @@ void DOMModule::draw_settings_content(MarketData& data)
     ImGui::Spacing();
 
     ImGui::TextDisabled("Auto Scroll (Recenter)");
-    if (ImGui::Checkbox("Enabled", &m_auto_scroll)) {
-        // If they just turned it on, snap immediately for good UX
+    if (ImGui::Checkbox("Enabled", &m_auto_scroll)) 
         if (m_auto_scroll) m_needs_recenter = true;
-    }
+
     ImGui::BeginDisabled(!m_auto_scroll);
     ImGui::SetNextItemWidth(150);
     // When the user moves the slider, the m_scroll_interval changes instantly

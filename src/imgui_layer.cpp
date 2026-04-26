@@ -51,109 +51,20 @@ void ImGuiLayer::init(GLFWwindow* window)
     ImGui_ImplOpenGL3_Init("#version 330");
 }
 
-/*void ImGuiLayer::begin()
+int ImGuiLayer::begin(int connection_status, bool& show_control_panel)
 {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    ////////////////////////////////////////////////////////////////////////////////
-    static bool dockspaceOpen = true;
-    static bool opt_fullscreen_persistant = true;
-    bool opt_fullscreen = opt_fullscreen_persistant;
-    static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_None;
-    // We are using the ImGuiWindowFlags_NoDocking flag to make the parent window not dockable into,
-    //ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDocking;
-
-    if (opt_fullscreen)
-    {
-        ImGuiViewport* viewport = ImGui::GetMainViewport();
-        ImGui::SetNextWindowPos(viewport->Pos);
-        ImGui::SetNextWindowSize(viewport->Size);
-        ImGui::SetNextWindowViewport(viewport->ID);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
-        window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
-    }
-    // When using ImGuiDockNodeFlags_PassthruCentralNode, DockSpace() will render our background and handle the pass-thru hole, so we ask Begin() to not render a background.
-    if (dockspace_flags & ImGuiDockNodeFlags_PassthruCentralNode)
-        window_flags |= ImGuiWindowFlags_NoBackground;
-    // Important: note that we proceed even if Begin() returns false (aka window is collapsed).
-    // This is because we want to keep our DockSpace() active. If a DockSpace() is inactive, 
-    // all active windows docked into it will lose their parent and become undocked.
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    //ImGui::Begin("DockSpace Demo", &dockspaceOpen, window_flags);
-    ImGui::Begin("DockSpace Demo", nullptr, window_flags);
-    ImGui::PopStyleVar();
-    if (opt_fullscreen)
-        ImGui::PopStyleVar(2);
-
-    // DockSpace ////////////////////////////////////
-    ImGuiIO& io = ImGui::GetIO();
-    ImGuiStyle& style = ImGui::GetStyle();
-    float minWinSize = style.WindowMinSize.x;
-    style.WindowMinSize.x = 320.0f; // if is a docking window
-    if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
-    {
-        ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
-        ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
-    }
-    style.WindowMinSize.x = minWinSize; // set back to default
-
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(20, 20));
-    if (ImGui::BeginMenuBar())
-    {
-        if (ImGui::BeginMenu("File"))
-        {
-            if (ImGui::MenuItem("Exit")) glfwSetWindowShouldClose(m_window, true);
-
-            if (ImGui::MenuItem("ImGui Demo")) show_demo = !show_demo;
-
-            if (ImGui::MenuItem("ImPlot Demo")) show_plot_demo = !show_plot_demo;
-
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("Theme"))
-        {
-            if (ImGui::MenuItem("Dark")) ImGui::StyleColorsDark();
-
-            if (ImGui::MenuItem("Light")) ImGui::StyleColorsLight();
-
-            if (ImGui::MenuItem("Custom")) set_theme();
-
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("Connections"))
-        {
-
-            ImGui::EndMenu();
-        }
-
-        ImGui::EndMenuBar();
-        ImGui::PopStyleVar();
-    }
-
-    if (show_demo)
-        ImGui::ShowDemoWindow(&show_demo);
-
-    if (show_plot_demo)
-        ImPlot::ShowDemoWindow(&show_plot_demo);
-
-    ImGui::End();
-}*/
-
-void ImGuiLayer::begin()
-{
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
+    float statusBarHeight =32.0f;
+    int tab_to_open = -1;
 
     // 1. DRAW THE BIG MENU BAR FIRST
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(20, 20)); 
-    
-    float menuBarHeight = 0.0f;
+    //ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(20, 20)); 
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(15.0f, 14.0f)); 
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 12.0f));
+
     if (ImGui::BeginMainMenuBar())
     {
         if (ImGui::BeginMenu("File"))
@@ -178,23 +89,39 @@ void ImGuiLayer::begin()
         }
         if (ImGui::BeginMenu("Connections"))
         {
-
+            if (ImGui::MenuItem("Manage Connections", "Ctrl+K")) 
+                tab_to_open = 2; // the 3rd tab (index 2)
+    
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Controls"))
+        {
+            // The &show_control_panel automatically handles the toggle AND the checkmark
+            ImGui::MenuItem("Open Control Panel", nullptr, &show_control_panel);
+            ImGui::Separator();
+            ImGui::TextDisabled("Layout Options");
+            if (ImGui::MenuItem("Reset Layout")) 
+            {
+                // Future logic for resetting docking
+            }
+            
             ImGui::EndMenu();
         }
         
-        // Save the height so can debug if needed
-        menuBarHeight = ImGui::GetWindowSize().y; 
-        
         ImGui::EndMainMenuBar();
     }
-    ImGui::PopStyleVar(); 
+    ImGui::PopStyleVar(2); 
 
     // 2. SETUP THE DOCKSPACE WINDOW
     // Important: We use WorkPos and WorkSize. 
     // ImGui automatically subtracts the MainMenuBar height from these!
     ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos); 
-    ImGui::SetNextWindowSize(viewport->WorkSize);
+
+    ImVec2 dockSpacePos = viewport->WorkPos;
+    ImVec2 dockSpaceSize = viewport->WorkSize;
+    dockSpaceSize.y -= statusBarHeight;
+    ImGui::SetNextWindowPos(dockSpacePos); 
+    ImGui::SetNextWindowSize(dockSpaceSize);
     ImGui::SetNextWindowViewport(viewport->ID);
 
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | 
@@ -224,6 +151,9 @@ void ImGuiLayer::begin()
         ImPlot::ShowDemoWindow(&show_plot_demo);
     
     ImGui::End(); // End MasterDockSpace
+
+    render_status_bar(connection_status, statusBarHeight);
+    return tab_to_open;
 }
 
 void ImGuiLayer::end()
@@ -251,6 +181,67 @@ void ImGuiLayer::shutdown()
     ImGui_ImplGlfw_Shutdown();
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
+}
+
+void ImGuiLayer::render_status_bar(int status, float height)
+{
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    
+    // Position at the very bottom of the screen
+    ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x, viewport->Pos.y + viewport->Size.y - height));
+    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, height));
+    ImGui::SetNextWindowViewport(viewport->ID);
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
+                             ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoBringToFrontOnFocus;
+
+    ImVec4 menuBarCol = ImGui::GetStyle().Colors[ImGuiCol_MenuBarBg];
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, menuBarCol);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    
+    if (ImGui::Begin("##StatusBar", nullptr, flags))
+    {
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        ImVec2 screen_pos = ImGui::GetWindowPos();
+        
+        float text_height = ImGui::GetTextLineHeight();
+        float vertical_pad = (height - text_height) * 0.5f;
+
+        ImU32 color;
+        const char* status_text;
+        if (status == 2) 
+        {
+            color = IM_COL32(0, 255, 120, 255);
+            status_text = "CONNECTED";
+        } else if (status == 1) 
+        {
+            color = IM_COL32(255, 180, 0, 255);
+            status_text = "RECONNECTING...";
+        } else 
+        {
+            color = IM_COL32(255, 60, 60, 255);
+            status_text = "DISCONNECTED";
+        }
+
+        float radius = 6.0f;
+        ImVec2 ball_center = ImVec2(screen_pos.x + 15, screen_pos.y + (height * 0.5f));
+        draw_list->AddCircleFilled(ball_center, radius, color);
+        draw_list->AddCircleFilled(ball_center, radius + 2.0f, (color & 0x00FFFFFF) | 0x33000000); // Glow
+
+        ImGui::SetCursorPos(ImVec2(30, vertical_pad)); 
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "%s", status_text);
+        if (ImGui::IsItemHovered() && status == 0) ImGui::SetTooltip("Open a Module to Connect");
+        if (ImGui::IsItemHovered() && status == 2) ImGui::SetTooltip("BINANCE FUTURES");
+
+        const char* app_version = "v_0.1.0";
+        float text_width = ImGui::CalcTextSize(app_version).x;
+        
+        ImGui::SetCursorPos(ImVec2(viewport->Size.x - text_width - 15, vertical_pad));
+        ImGui::TextDisabled("%s", app_version);
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
 }
 
 void ImGuiLayer::set_theme()
@@ -366,3 +357,96 @@ void ImGuiLayer::set_theme()
     pstyle.LegendSpacing = {10, 2};
     pstyle.AnnotationPadding = {4,2};
 }
+
+/*void ImGuiLayer::begin()
+{
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    ////////////////////////////////////////////////////////////////////////////////
+    static bool dockspaceOpen = true;
+    static bool opt_fullscreen_persistant = true;
+    bool opt_fullscreen = opt_fullscreen_persistant;
+    static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_None;
+    // We are using the ImGuiWindowFlags_NoDocking flag to make the parent window not dockable into,
+    //ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
+    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDocking;
+
+    if (opt_fullscreen)
+    {
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(viewport->Pos);
+        ImGui::SetNextWindowSize(viewport->Size);
+        ImGui::SetNextWindowViewport(viewport->ID);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+        window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+    }
+    // When using ImGuiDockNodeFlags_PassthruCentralNode, DockSpace() will render our background and handle the pass-thru hole, so we ask Begin() to not render a background.
+    if (dockspace_flags & ImGuiDockNodeFlags_PassthruCentralNode)
+        window_flags |= ImGuiWindowFlags_NoBackground;
+    // Important: note that we proceed even if Begin() returns false (aka window is collapsed).
+    // This is because we want to keep our DockSpace() active. If a DockSpace() is inactive, 
+    // all active windows docked into it will lose their parent and become undocked.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    //ImGui::Begin("DockSpace Demo", &dockspaceOpen, window_flags);
+    ImGui::Begin("DockSpace Demo", nullptr, window_flags);
+    ImGui::PopStyleVar();
+    if (opt_fullscreen)
+        ImGui::PopStyleVar(2);
+
+    // DockSpace ////////////////////////////////////
+    ImGuiIO& io = ImGui::GetIO();
+    ImGuiStyle& style = ImGui::GetStyle();
+    float minWinSize = style.WindowMinSize.x;
+    style.WindowMinSize.x = 320.0f; // if is a docking window
+    if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
+    {
+        ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
+        ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
+    }
+    style.WindowMinSize.x = minWinSize; // set back to default
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(20, 20));
+    if (ImGui::BeginMenuBar())
+    {
+        if (ImGui::BeginMenu("File"))
+        {
+            if (ImGui::MenuItem("Exit")) glfwSetWindowShouldClose(m_window, true);
+
+            if (ImGui::MenuItem("ImGui Demo")) show_demo = !show_demo;
+
+            if (ImGui::MenuItem("ImPlot Demo")) show_plot_demo = !show_plot_demo;
+
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Theme"))
+        {
+            if (ImGui::MenuItem("Dark")) ImGui::StyleColorsDark();
+
+            if (ImGui::MenuItem("Light")) ImGui::StyleColorsLight();
+
+            if (ImGui::MenuItem("Custom")) set_theme();
+
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Connections"))
+        {
+
+            ImGui::EndMenu();
+        }
+
+        ImGui::EndMenuBar();
+        ImGui::PopStyleVar();
+    }
+
+    if (show_demo)
+        ImGui::ShowDemoWindow(&show_demo);
+
+    if (show_plot_demo)
+        ImPlot::ShowDemoWindow(&show_plot_demo);
+
+    ImGui::End();
+}*/

@@ -1,8 +1,11 @@
 #include <network_layer.h>
+#include <GLFW/glfw3.h>
 
 NetworkLayer::NetworkLayer(MarketData& data) : m_data(data) 
 {
     ix::initNetSystem(); 
+    m_ws.setPingInterval(30);
+    //m_ws.enableAutomaticReconnection();
 }
 
 NetworkLayer::~NetworkLayer()
@@ -33,6 +36,7 @@ void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_fut
     m_ws.setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
         if (msg->type == ix::WebSocketMessageType::Message) 
         {
+            connection_status = 2;
             auto root = nlohmann::json::parse(msg->str);
             if (root.find("stream") == root.end()) return; 
             // In combined streams, the actual data is in ["data"]
@@ -60,14 +64,17 @@ void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_fut
         }
         else if (msg->type == ix::WebSocketMessageType::Open) 
         {
+            connection_status = 1;
             std::cout << "[WS] Successfully connected to Binance Futures!" << std::endl;
         } 
         else if (msg->type == ix::WebSocketMessageType::Error)
         {
+            connection_status = 0;
             std::cerr << "[WS] Error: " << msg->errorInfo.reason << std::endl;
         }
         else if (msg->type == ix::WebSocketMessageType::Close) 
         {
+            connection_status = 0;
             std::cout << "[WS] Connection Closed." << std::endl;
         }
     });
@@ -76,6 +83,7 @@ void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_fut
 
 void NetworkLayer::process_tick_data(const std::string& symbol, const nlohmann::json& j) 
 {
+    //std::cout << "!!!!!!!!!  Tick received for " << symbol << " Price: " << j["p"] << std::endl;
     try 
     {
         double price = std::stod(j["p"].get<std::string>());
@@ -87,9 +95,8 @@ void NetworkLayer::process_tick_data(const std::string& symbol, const nlohmann::
         double delta = is_sell ? -qty : qty;
 
         std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
-
-        // Access the specific data for THIS symbol
         SymbolData& sData = m_data.get(symbol);
+        sData.last_update_time = glfwGetTime();
             
         // Update CVD
         sData.running_cvd += delta;
@@ -97,21 +104,6 @@ void NetworkLayer::process_tick_data(const std::string& symbol, const nlohmann::
         // Update Max Qty for visual scaling
         if (qty > sData.max_tape_qty) sData.max_tape_qty = qty;
 
-        // Update Tape (Create Tape Entry with BBO Snapshot)
-        /*TapeTick tt;
-        tt.time = time;
-        tt.price = price;
-        tt.quantity = qty;
-        tt.is_sell = is_sell;
-        tt.bid_at_time = sData.last_best_bid;
-        tt.ask_at_time = sData.last_best_ask;
-        sData.tape.push_front(tt);
-        if (sData.tape.size() > m_data.m_max_tape_rows) 
-            sData.tape.pop_back();
-
-        // Update Candles
-        double bucket_start = std::floor(time / m_data.tick_timeframe) * m_data.tick_timeframe;
-        */
         // Filling Tape
         sData.tape.push_front({time, price, qty, is_sell, sData.last_best_bid, sData.last_best_ask});
         if (sData.tape.size() > m_data.m_max_tape_rows) sData.tape.pop_back();
@@ -218,6 +210,7 @@ void NetworkLayer::process_depth_diff(const std::string& symbol, const nlohmann:
 {
     std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
     auto& sData = m_data.get(symbol);
+    sData.last_update_time = glfwGetTime();
 
     // In Binance Futures, the first event should have u >= U and U <= lastUpdateId+1
     // For simplicity, we just discard any events where the final update ID 'u' 

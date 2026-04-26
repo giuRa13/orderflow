@@ -4,7 +4,7 @@ BaseModule::BaseModule(const std::string& name)
     : window_name(name) 
 {
     //memset(symbol_input, 0, sizeof(symbol_input));
-    //strncpy(symbol_input, "btcusdt", sizeof(symbol_input));
+    strncpy(symbol_input, "btcusdt", sizeof(symbol_input));
     //current_symbol = "btcusdt";
 }
 
@@ -19,8 +19,6 @@ void BaseModule::render_standalone(MarketData& data)
         update_content(data);
     }
     ImGui::End();
-
-    //render_settings_window(data);
 }
 
 void BaseModule::render_common_header() 

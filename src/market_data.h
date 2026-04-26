@@ -55,9 +55,7 @@ struct SymbolData {
     // STORAGE for DOM levels
     std::map<double, double, std::greater<double>> full_asks;
     std::map<double, double, std::greater<double>> full_bids;
-    //std::map<double, double> ask_sums; 
-    //std::map<double, double> bid_sums;
-    std::map<double, double> ask_sums; // Change from unordered_map
+    std::map<double, double> ask_sums;
     std::map<double, double> bid_sums;
     double running_cvd = 0;
     double max_tape_qty = 1.0;
@@ -70,6 +68,8 @@ struct SymbolData {
     bool dom_dirty = true;
     double cached_max_vol = 1.0;
     double cached_spread = 0.0;
+
+    double last_update_time = 0.0;
 };
 
 class MarketData
@@ -99,8 +99,7 @@ public:
     SymbolData& get(const std::string& symbol) 
     {
         std::string lower_sym = symbol;
-        for (auto & c: lower_sym) c = tolower(c);
-        
+        std::transform(lower_sym.begin(), lower_sym.end(), lower_sym.begin(), ::tolower);
         std::lock_guard<std::recursive_mutex> lock(mtx);
         return assets[lower_sym]; 
     }
