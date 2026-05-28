@@ -52,16 +52,26 @@ struct BookLevel {
 struct SymbolData {
     std::vector<TickCandle> candles;
     std::deque<TapeTick> tape;
+
     // STORAGE for DOM levels
     std::map<double, double, std::greater<double>> full_asks;
     std::map<double, double, std::greater<double>> full_bids;
     std::map<double, double> ask_sums;
     std::map<double, double> bid_sums;
+    std::map<double, double> market_sells; 
+    std::map<double, double> market_buys;
+    // blink
+    std::map<double, double> last_buy_time;  
+    std::map<double, double> last_sell_time;
+    double max_market_vol = 1.0; // For scaling the center bars
+
     double running_cvd = 0;
     double max_tape_qty = 1.0;
 
     double last_best_bid = 0.0;
     double last_best_ask = 0.0;
+    double last_trade_time = 0.0;
+    double last_depth_time = 0.0;
 
     long long last_update_id = 0;
     bool snapshot_loaded = false;

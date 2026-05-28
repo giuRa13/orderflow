@@ -1,5 +1,6 @@
 #include <network_layer.h>
 #include <GLFW/glfw3.h>
+#include <chrono>
 
 NetworkLayer::NetworkLayer(MarketData& data) : m_data(data) 
 {
@@ -19,6 +20,12 @@ void NetworkLayer::end()
     m_ws.stop();
 } 
 
+double GetTimeNow() 
+{
+    auto now = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(now.time_since_epoch()).count();
+}
+
 void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_futures) 
 {        
     std::string base = is_futures ? 
@@ -27,7 +34,11 @@ void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_fut
 
     std::string stream_path = "";
     for (auto& s : symbols) 
-        stream_path += s + "@aggTrade/" + s + "@bookTicker/" + s + "@depth@100ms/";
+    {
+        std::string sym = s;
+        std::transform(sym.begin(), sym.end(), sym.begin(), ::tolower);
+        stream_path += sym + "@aggTrade/" + sym + "@bookTicker/" + sym + "@depth@100ms/";
+    }
 
     if (!stream_path.empty()) stream_path.pop_back(); // remove last '/'
 
@@ -36,35 +47,59 @@ void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_fut
     m_ws.setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
         if (msg->type == ix::WebSocketMessageType::Message) 
         {
-            connection_status = 2;
-            auto root = nlohmann::json::parse(msg->str);
-            if (root.find("stream") == root.end()) return; 
-            // In combined streams, the actual data is in ["data"]
-             // The symbol name is in ["stream"] (e.g. "btcusdt@aggTrade")
-            std::string stream_name = root["stream"];
-            auto& data = root["data"];
-            std::string symbol = stream_name.substr(0, stream_name.find('@'));
+            try {
+                auto root = nlohmann::json::parse(msg->str);
 
-            /*if (stream_name.find("@depth20") != std::string::npos) 
+                std::string stream = root["stream"]; // DO NOT tolower this
+                auto& data = root["data"];
+                // Get the event type (Always "aggTrade", "depthUpdate", or "bookTicker")
+            if (!data.contains("e")) return;
+            std::string event_type = data["e"].get<std::string>();
+                std::string symbol = stream.substr(0, stream.find('@'));
+                std::string stream_lower = stream;
+                std::transform(stream_lower.begin(), stream_lower.end(), stream_lower.begin(), ::tolower);
+
+                std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
+                auto& sData = m_data.get(symbol);
+
+                /*if (stream_lower.find("@depth") != std::string::npos) 
+                {
+                    sData.last_depth_time = GetTimeNow();
+                    process_depth_diff(symbol, data);
+                } 
+                else if (stream_lower.find("@aggtrade") != std::string::npos) // Lowercase T
+                {
+                    sData.last_trade_time = GetTimeNow(); 
+                    process_tick_data(symbol, data);
+                }
+                else if (stream_lower.find("@bookticker") != std::string::npos) // Lowercase t
+                {
+                    process_book_ticker(symbol, data);
+                }*/
+                // IDENTIFY STREAM BY EVENT TYPE (NOT BY STRING FIND)
+            if (event_type == "depthUpdate") 
             {
-                process_depth_data(symbol, data);
-            }*/
-            if (stream_name.find("@depth") != std::string::npos) 
-            {
+                sData.last_depth_time = GetTimeNow();
                 process_depth_diff(symbol, data);
+            } 
+            else if (event_type == "aggTrade") 
+            {
+                sData.last_trade_time = GetTimeNow(); 
+                process_tick_data(symbol, data);
             }
-            else if (stream_name.find("@bookTicker") != std::string::npos) 
+            else if (event_type == "bookTicker") 
             {
                 process_book_ticker(symbol, data);
+            }
             } 
-            else if (stream_name.find("@aggTrade") != std::string::npos) 
+            catch (const std::exception& e) 
             {
-                process_tick_data(symbol, data);
+                std::cerr << "[JSON] Global Parse Error: " << e.what() << std::endl;
             }
         }
         else if (msg->type == ix::WebSocketMessageType::Open) 
         {
-            connection_status = 1;
+            connection_status = 1; // Stay Orange/Yellow until first data packet
             std::cout << "[WS] Successfully connected to Binance Futures!" << std::endl;
         } 
         else if (msg->type == ix::WebSocketMessageType::Error)
@@ -86,51 +121,50 @@ void NetworkLayer::process_tick_data(const std::string& symbol, const nlohmann::
     //std::cout << "!!!!!!!!!  Tick received for " << symbol << " Price: " << j["p"] << std::endl;
     try 
     {
-        double price = std::stod(j["p"].get<std::string>());
-        double qty   = std::stod(j["q"].get<std::string>());
-        //double time  = j["T"].get<double>() / 1000.0;
-        long long raw_time = j["T"].get<long long>(); 
+       // Robust parsing for p and q (handle both string and number)
+        double price = j["p"].is_string() ? std::stod(j["p"].get<std::string>()) : j["p"].get<double>();
+        double qty   = j["q"].is_string() ? std::stod(j["q"].get<std::string>()) : j["q"].get<double>();
+
+        // Trade time handling
+        long long raw_time = j["T"].get<long long>();
         double time = (double)raw_time / 1000.0;
+        
+        // Side handling (m = buyer is maker)
         bool is_sell = j["m"].get<bool>();
         double delta = is_sell ? -qty : qty;
 
-        std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
-        SymbolData& sData = m_data.get(symbol);
-        sData.last_update_time = glfwGetTime();
-            
-        // Update CVD
-        sData.running_cvd += delta;
-
-        // Update Max Qty for visual scaling
-        if (qty > sData.max_tape_qty) sData.max_tape_qty = qty;
-
-        // Filling Tape
-        sData.tape.push_front({time, price, qty, is_sell, sData.last_best_bid, sData.last_best_ask});
-        if (sData.tape.size() > m_data.m_max_tape_rows) sData.tape.pop_back();
-        // Filling Candles (ensure timeframe is not 0)
-        double tf = m_data.tick_timeframe;
-        if (tf <= 0.0) tf = 1.0; 
-        double bucket_start = std::floor(time / tf) * tf;
-
-        if (sData.candles.empty() || sData.candles.back().time < bucket_start) 
-        {
-            TickCandle nc;
-            nc.time = bucket_start;
-            nc.open = nc.high = nc.low = nc.close = price;
-            nc.cvd_open = nc.cvd_high = nc.cvd_low = nc.cvd_close = sData.running_cvd;
-            sData.candles.push_back(nc);
-        } 
-        else 
-        {
-            TickCandle& cur = sData.candles.back();
-            cur.high = std::max(cur.high, price);
-            cur.low  = std::min(cur.low, price);
-            cur.close = price;
-            cur.cvd_high = std::max(cur.cvd_high, sData.running_cvd);
-            cur.cvd_low  = std::min(cur.cvd_low, sData.running_cvd);
-            cur.cvd_close = sData.running_cvd;
+        SymbolData& sData = m_data.get(symbol); // Mutex already locked in caller
+        
+        // Update DOM Market Orders
+        double step = m_data.dom_step;
+        double bucket_p = std::floor(price / step) * step;
+        if (is_sell) {
+            sData.market_sells[bucket_p] += qty;
+            sData.last_sell_time[bucket_p] = time;
+        } else {
+            sData.market_buys[bucket_p] += qty;
+            sData.last_buy_time[bucket_p] = time;
         }
 
+        // Scaling, CVD, and Tape updates...
+        if (sData.market_sells[bucket_p] > sData.max_market_vol) sData.max_market_vol = sData.market_sells[bucket_p];
+        if (sData.market_buys[bucket_p] > sData.max_market_vol)  sData.max_market_vol = sData.market_buys[bucket_p];
+        sData.running_cvd += delta;
+        if (qty > sData.max_tape_qty) sData.max_tape_qty = qty;
+
+        sData.tape.push_front({time, price, qty, is_sell, sData.last_best_bid, sData.last_best_ask});
+        if (sData.tape.size() > m_data.m_max_tape_rows) sData.tape.pop_back();
+
+        // Candle update logic...
+        double tf = m_data.tick_timeframe;
+        double bucket_start = std::floor(time / (tf > 0 ? tf : 1.0)) * (tf > 0 ? tf : 1.0);
+        if (sData.candles.empty() || sData.candles.back().time < bucket_start) {
+            sData.candles.push_back({bucket_start, price, price, price, price, sData.running_cvd, sData.running_cvd, sData.running_cvd, sData.running_cvd});
+        } else {
+            TickCandle& cur = sData.candles.back();
+            cur.high = std::max(cur.high, price); cur.low = std::min(cur.low, price); cur.close = price;
+            cur.cvd_high = std::max(cur.cvd_high, sData.running_cvd); cur.cvd_low = std::min(cur.cvd_low, sData.running_cvd); cur.cvd_close = sData.running_cvd;
+        }
         if (sData.candles.size() > 1000) sData.candles.erase(sData.candles.begin());
     } 
     catch (const std::exception& e) 
@@ -158,7 +192,7 @@ void NetworkLayer::fetch_dom_snapshot(const std::string& symbol, bool is_futures
 
     std::string baseUrl = is_futures ? "https://fapi.binance.com" : "https://api.binance.com";
     std::string endpoint = is_futures ? "/fapi/v1/depth" : "/api/v3/depth";
-    std::string url = baseUrl + endpoint + "?symbol=" + symUpper + "&limit=1000";
+    std::string url = baseUrl + endpoint + "?symbol=" + symUpper + "&limit=100";
 
     std::cout << "[REST] Fetching from: " << url << std::endl;
 
@@ -211,6 +245,7 @@ void NetworkLayer::process_depth_diff(const std::string& symbol, const nlohmann:
     std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
     auto& sData = m_data.get(symbol);
     sData.last_update_time = glfwGetTime();
+    sData.last_depth_time = GetTimeNow();
 
     // In Binance Futures, the first event should have u >= U and U <= lastUpdateId+1
     // For simplicity, we just discard any events where the final update ID 'u' 

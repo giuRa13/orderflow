@@ -143,14 +143,14 @@ void DOMModule::update_content(MarketData& data)
                 line_pos = ImGui::GetCursorScreenPos();
                 line_ready = true;
             }
-
             char p_buf[32]; 
-            sprintf(p_buf, "%.2f", p);
+            sprintf(p_buf, "%.*f", m_price_decimals, p);//sprintf(p_buf, "%.2f", p);
             float off = (ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(p_buf).x) * 0.5f;
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + off);
             ImGui::TextColored(price_color, "%s", p_buf);
 
-            if (p > live_bucket) 
+            // BID, ASK
+            /*if (p > live_bucket) 
             {
                 for(int c=0; c<4; c++) ImGui::TableNextColumn();
                 render_dom_bar(sData.ask_sums[p], sData.cached_max_vol, data.bid_color, right_to_left_ask, center_values_ask);
@@ -160,7 +160,28 @@ void DOMModule::update_content(MarketData& data)
                 ImGui::TableNextColumn();
                 render_dom_bar(sData.bid_sums[p], sData.cached_max_vol, data.ask_color, right_to_left_bid, center_values_bid);
                 for(int c=0; c<3; c++) ImGui::TableNextColumn();
-            }
+            }*/
+            // Column 1: Bid (Limits)
+            ImGui::TableNextColumn();
+            if (p <= live_bucket) 
+                render_dom_bar(sData.bid_sums[p], sData.cached_max_vol, data.ask_color, right_to_left_bid, center_values_bid);
+
+             // --- COLUMN 2: SELLS (MARKET) ---
+            ImGui::TableNextColumn();
+            double last_s_time = sData.last_sell_time.count(p) ? sData.last_sell_time[p] : 0.0;
+            render_market_cell(sData.market_sells[p], sData.max_market_vol, data.bid_color, sells_text_color, true, center_values_market_sells, last_s_time);
+            //render_market_cell(sData.market_sells[p], sData.max_market_vol, data.bid_color, true, center_values_market_sells);
+
+            // --- COLUMN 3: BUYS (MARKET) ---
+            ImGui::TableNextColumn();
+            double last_b_time = sData.last_buy_time.count(p) ? sData.last_buy_time[p] : 0.0;
+            render_market_cell(sData.market_buys[p], sData.max_market_vol, data.ask_color, buys_text_color, false, center_values_market_buys, last_b_time);
+            // render_market_cell(sData.market_buys[p], sData.max_market_vol, data.ask_color, false, center_values_market_buys);
+
+            // --- COLUMN 4: ASK (LIMITS) ---
+            ImGui::TableNextColumn();
+            if (p > live_bucket) 
+                render_dom_bar(sData.ask_sums[p], sData.cached_max_vol, data.bid_color ,right_to_left_ask, center_values_ask);
         }
         
         if (line_ready) 
@@ -212,7 +233,7 @@ void DOMModule::render_dom_bar(double qty, double max_vol, ImVec4 color, bool ri
     draw_list->AddRectFilled(bar_min, bar_max, bar_col);
 
     char buf[32];
-    sprintf(buf, "%.2f", qty);
+    sprintf(buf, "%.*f", m_limit_decimals, qty); // sprintf(buf, "%.2f", qty);
     ImVec2 text_size = ImGui::CalcTextSize(buf);
     float text_x = 0.0f;
     
@@ -223,6 +244,79 @@ void DOMModule::render_dom_bar(double qty, double max_vol, ImVec4 color, bool ri
 
     float text_y = pos.y + (size.y - text_size.y) * 0.5f;
     draw_list->AddText(ImVec2(text_x, text_y), IM_COL32_WHITE, buf);
+}
+
+void DOMModule::render_market_cell(double qty, double max_vol, ImVec4 color, ImVec4 text_color, bool align_right, bool center_text, double last_activity_time)
+{
+    if (qty <= 0.0000001) return;
+
+    float height = ImGui::GetTextLineHeightWithSpacing();
+    ImVec2 size = ImVec2(ImGui::GetContentRegionAvail().x, height);
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+
+    ImGui::Dummy(size); // Create the space
+
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    double now = glfwGetTime();
+    double time_diff = now - last_activity_time;
+
+    float flash_duration = 0.4f;
+    float flash_alpha = 0.0f;
+    if (time_diff < flash_duration) 
+        flash_alpha = 1.0f - ((float)time_diff / flash_duration);
+
+    float fraction = (float)(qty / max_vol);
+    if (fraction > 1.0f) fraction = 1.0f;
+    if (fraction < 0.02f) fraction = 0.02f; // Small visible sliver
+
+    float bar_width = size.x * fraction;
+    ImU32 bar_col = ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, 0.25f));
+
+    ImVec2 b_min = align_right ? ImVec2(pos.x + size.x - bar_width, pos.y + 1) : ImVec2(pos.x, pos.y + 1);
+    ImVec2 b_max = align_right ? ImVec2(pos.x + size.x, pos.y + height - 1) : ImVec2(pos.x + bar_width, pos.y + height - 1);
+    draw_list->AddRectFilled(b_min, b_max, bar_col);
+
+    if (flash_alpha > 0.0f) 
+    {
+        ImU32 blink_col = ImGui::ColorConvertFloat4ToU32(ImVec4(
+            color.x * 1.2f, // Slightly brighter
+            color.y * 1.2f, 
+            color.z * 1.2f, 
+            flash_alpha * 0.7f // Start at 0.7 opacity
+        ));
+
+        draw_list->AddRectFilled(
+            ImVec2(pos.x, pos.y + 1), 
+            ImVec2(pos.x + size.x, pos.y + height - 1), 
+            blink_col
+        );
+        
+        // Optional: thin bright border during the peak of the flash
+        if (flash_alpha > 0.8f && m_market_orders_border) 
+        {
+            draw_list->AddRect(
+                ImVec2(pos.x, pos.y + 1), 
+                ImVec2(pos.x + size.x, pos.y + height - 1), 
+                IM_COL32(255, 255, 255, (int)(flash_alpha * 100))
+            );
+        }
+    }
+
+    // Text
+    char buf[32];
+    sprintf(buf, "%.*f", m_market_decimals, qty); //sprintf(buf, "%.2f", qty);
+    ImVec2 text_size = ImGui::CalcTextSize(buf);
+
+    float text_x = 0.0f;
+    if (center_text) 
+        text_x = pos.x + (size.x - text_size.x) * 0.5f;
+    else 
+        text_x = align_right ? (pos.x + size.x - text_size.x - 5.0f) : (pos.x + 5.0f);
+    float text_y = pos.y + (size.y - text_size.y) * 0.5f;
+
+    ImU32 text_col = (flash_alpha > 0.5f) ? IM_COL32_WHITE : ImGui::ColorConvertFloat4ToU32(text_color);
+
+    draw_list->AddText(ImVec2(text_x, text_y), text_col, buf);
 }
 
 void DOMModule::render_top_ui(MarketData& data, SymbolData& sData)
@@ -247,10 +341,20 @@ void DOMModule::render_top_ui(MarketData& data, SymbolData& sData)
 
     // RIGHT SIDE
     ImGui::SameLine();
-    float buttons_area_width = 72.0f; 
+    float buttons_area_width = 110.0f; 
     float right_pos = ImGui::GetWindowWidth() - buttons_area_width - ImGui::GetStyle().WindowPadding.x;
     if (ImGui::GetScrollMaxY() > 0) right_pos -= ImGui::GetStyle().ScrollbarSize;
     ImGui::SetCursorPosX(right_pos);
+
+    if (ImGui::Button(ICON_FA_TRASH, ImVec2(32, 0))) 
+    {
+        std::lock_guard<std::recursive_mutex> lock(data.mtx);
+        sData.market_buys.clear();
+        sData.market_sells.clear();
+        sData.max_market_vol = 1.0;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clear Market Volume Columns");
+    ImGui::SameLine();
 
     bool was_auto_scroll_active = m_auto_scroll; 
     if (was_auto_scroll_active) 
@@ -340,6 +444,19 @@ void DOMModule::draw_settings_content(MarketData& data)
     ImGui::TextDisabled("Center Values");
     ImGui::Checkbox("Center Ask", &center_values_ask);
     ImGui::Checkbox("Center Bid", &center_values_bid);
+    ImGui::Checkbox("Center Market Sells", &center_values_market_sells);
+    ImGui::Checkbox("Center Market Buys", &center_values_market_buys);
+    ImGui::Checkbox("Market Orders Border", &m_market_orders_border);
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::TextDisabled("Digits Precision");
+    ImGui::SliderInt("Price Decimals", &m_price_decimals, 0, 2);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Decimals for the Price column");
+    ImGui::SliderInt("Limit Decimals", &m_limit_decimals, 0, 2);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Decimals for Bid/Ask volume");
+    ImGui::SliderInt("Market Decimals", &m_market_decimals, 0, 2);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Decimals for Sells/Buys volume");
     ImGui::Separator();
     ImGui::Spacing();
 
@@ -348,6 +465,8 @@ void DOMModule::draw_settings_content(MarketData& data)
     ImGui::ColorEdit4("Current Price", &price_highlight.x);
     ImGui::ColorEdit4("Ask Bg", &ask_bg_color.x);
     ImGui::ColorEdit4("Bid Bg", &bid_bg_color.x);
+    ImGui::ColorEdit4("Buys Text", &buys_text_color.x);
+    ImGui::ColorEdit4("Sells text", &sells_text_color.x);
     ImGui::Separator();
     ImGui::Spacing();
 }

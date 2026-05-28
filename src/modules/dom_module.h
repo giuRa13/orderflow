@@ -13,6 +13,7 @@ public:
 
 private:
     void render_dom_bar(double qty, double max_vol, ImVec4 color, bool right_to_left, bool center_text);
+    void render_market_cell(double qty, double max_vol, ImVec4 color, ImVec4 text_color, bool align_right, bool center_text, double last_activity_time);
     void render_spread_row(SymbolData& sData, MarketData& data, double last_price);
     void render_top_ui(MarketData& data, SymbolData& sData);
 
@@ -33,10 +34,18 @@ private:
     ImVec4 price_highlight  = {1.0f, 1.0f, 0.0f, 1.0f};
     ImVec4 ask_bg_color  = {0.443f, 0.027f, 0.015f, 1.0f}; // 113, 7, 4
     ImVec4 bid_bg_color  = {0.027f, 0.200f, 0.407f, 1.0f}; // 7, 51, 104
+    ImVec4 buys_text_color  = {0.325f, 0.490f, 0.694f, 1.0f}; // 83, 125, 177
+    ImVec4 sells_text_color  = {0.752f, 0.313f, 0.301f, 1.0f}; // 192, 80, 77
     bool right_to_left_ask = false;
     bool right_to_left_bid = true;
     bool center_values_ask = true;
     bool center_values_bid = true;
+    bool center_values_market_sells = true;
+    bool center_values_market_buys = true;
+    bool m_market_orders_border = false;
     bool m_auto_scroll = true;
     float m_scroll_interval = 8.0f;
+    int m_price_decimals = 2;
+    int m_limit_decimals = 1;
+    int m_market_decimals = 1;
 };
