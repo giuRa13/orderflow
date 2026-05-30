@@ -184,188 +184,117 @@ void Application::run()
     provider.end();
 }
 
-/*void Application::manage_connections(NetworkLayer& provider) 
+/*
+If something genuinely breaks (connection drops, data goes silent):
+ - 30 second grace period before declaring stuck on first connect
+ - 60 second grace period if data was previously flowing
+ - Then exponential backoff: 5s → 10s → 20s → 40s → 80s → 120s max between retries
+ - At worst that's ~6 reconnects to reach max backoff, then one reconnect every 2 minutes — well within Binance's 300/5min limit
+
+ -Reconnects that don't count against rate limits — symbol changes and Spot↔Futures switches (user-initiated) 
+ reset backoff to 5s and bypass the backoff timer entirely, since those are deliberate user actions not connection failures.
+ -Each reconnect makes exactly 1 REST request (the depth snapshot) plus opens 2 WebSocket connections for Futures. At the max rate of one reconnect per 2 minutes
+*/
+void Application::manage_connections(NetworkLayer& provider) 
 {
     double now = glfwGetTime();
     std::set<std::string> symbols;
-    
-    static double chart_empty_since = 0;
-    static double tape_empty_since = 0;
-    static double dom_empty_since = 0;
-    static double cvd_empty_since = 0;
+ 
     static double last_reconnect_time = 0;
-    static int retry_count = 0;
-
-    bool any_module_stuck = false;
-    bool all_modules_ok = true;
-
-    auto CollectSymbol = [&](bool is_open, const std::string& sym) {
-        if (is_open) symbols.insert(sym);
-    };
-    CollectSymbol(m_candle_chart_module.is_open, m_candle_chart_module.current_symbol);
-    CollectSymbol(m_cvd_module.is_open,          m_cvd_module.current_symbol);
-    CollectSymbol(m_tape_module.is_open,         m_tape_module.current_symbol);
-    CollectSymbol(m_dom_module.is_open,          m_dom_module.current_symbol);
-
-    if (symbols.empty()) return;
-
-    // --- WATCHDOG LOGIC ---
-    auto ProcessTimer = [&](bool is_open, bool is_empty, double& timer_var) {
-        if (is_open && is_empty) 
-        {
-            all_modules_ok = false;
-            if (timer_var == 0) timer_var = now;
-            else if (now - timer_var > 7.0) any_module_stuck = true;
-        } else 
-        {
-            timer_var = 0; 
-        }
-    };
-
-    ProcessTimer(m_candle_chart_module.is_open, m_market_data.get(m_candle_chart_module.current_symbol).candles.empty(), chart_empty_since);
-    ProcessTimer(m_cvd_module.is_open,          m_market_data.get(m_cvd_module.current_symbol).candles.empty(),          cvd_empty_since);
-    ProcessTimer(m_tape_module.is_open,         m_market_data.get(m_tape_module.current_symbol).tape.empty(),             tape_empty_since);
-    bool dom_data_missing = false;
-    if (m_dom_module.is_open) 
-    {
-        auto& dData = m_market_data.get(m_dom_module.current_symbol);
-        // Stuck if Snapshot failed OR (Snapshot loaded but NO market orders arrived yet)
-        dom_data_missing = !dData.snapshot_loaded || (dData.market_buys.empty() && dData.market_sells.empty());
-    }
-    ProcessTimer(m_dom_module.is_open, dom_data_missing, dom_empty_since);
-
-    // Bottom bar ball status
-    if (any_module_stuck)      provider.connection_status = 1; 
-    else if (!all_modules_ok)  provider.connection_status = 1; 
-    else                       provider.connection_status = 2; 
-
-    if (all_modules_ok) retry_count = 0;
-
-    // --- RECONNECT TRIGGER ---
-    if (symbols != m_last_subscribed_symbols || m_market_data.m_reconnect_requested || any_module_stuck) 
-    {
-        // if user manually clicked the button, ignore the 3s/10s rate limit
-        bool manual_override = m_market_data.m_reconnect_requested;
-
-        double wait_time = any_module_stuck ? 10.0 : 3.0;
-        if (now - last_reconnect_time < wait_time) return;
-        if (manual_override || any_module_stuck) 
-        {
-            std::cout << (manual_override ? "[Network] Manual reconnect..." : "[Watchdog] Connection stuck. Restarting...") << std::endl;
-            chart_empty_since = tape_empty_since = dom_empty_since = cvd_empty_since = 0;
-            if (manual_override) retry_count = 0;
-            else retry_count++;
-        }
-
-        last_reconnect_time = now;
-        m_market_data.m_reconnect_requested = false;
-
-        provider.end(); // Stop WS before doing REST work
-        {
-            // lock here because the NetworkLayer threads might still be alive 
-            // for a few milliseconds while shutting down.
-            std::lock_guard<std::recursive_mutex> lock(m_market_data.mtx);
-            for (const auto& s : symbols) 
-            {
-                auto& sData = m_market_data.get(s);
-                // Clear everything so the UI shows "Loading" and Watchdog starts fresh
-                sData.candles.clear();
-                sData.tape.clear();
-                sData.full_asks.clear();
-                sData.full_bids.clear();
-                sData.ask_sums.clear();
-                sData.bid_sums.clear();
-                sData.market_buys.clear();  // <--- MUST BE CLEARED
-                sData.market_sells.clear();
-                
-                sData.snapshot_loaded = false; 
-                sData.max_market_vol = 1.0;
-                sData.dom_dirty = true;
-                sData.running_cvd = 0; 
-            }
-        }
-
-        // Now fetch fresh snapshots and start new WS
-        for (const auto& s : symbols) 
-        {
-            provider.fetch_dom_snapshot(s, m_market_data.m_is_futures);
-        }
-
-        provider.start_multi(symbols, m_market_data.m_is_futures);
-        m_last_subscribed_symbols = symbols;
-        
-        std::cout << "[WS] Subscriptions restarted for: ";
-        for(auto& s : symbols) std::cout << s << " ";
-        std::cout << std::endl;
-    }
-}*/
-
-void Application::manage_connections(NetworkLayer& provider) 
-{
-    auto c_now = std::chrono::steady_clock::now();
-    double now = std::chrono::duration<double>(c_now.time_since_epoch()).count();
-    std::set<std::string> symbols;
-    static double last_reconnect_execute_time = now;
-
+    static double reconnect_backoff   = 5.0;  // doubles on each watchdog retry, max 120s
+    static double stuck_since         = 0;
+    static bool   last_is_futures     = m_market_data.m_is_futures;
+ 
     if (m_candle_chart_module.is_open) symbols.insert(m_candle_chart_module.current_symbol);
     if (m_cvd_module.is_open)          symbols.insert(m_cvd_module.current_symbol);
     if (m_tape_module.is_open)         symbols.insert(m_tape_module.current_symbol);
     if (m_dom_module.is_open)          symbols.insert(m_dom_module.current_symbol);
-
+ 
     if (symbols.empty()) return;
-
-    bool any_module_stuck = false;
-    bool all_modules_healthy = true;
-
-    for (const auto& sym : symbols) {
+ 
+     // --- STATUS (green only when data is actually flowing) ---
+    bool all_ok = true;
+    for (const auto& sym : symbols)
+    {
         auto& sData = m_market_data.get(sym);
-        
-        // Check if data is flowing (Health)
-        // If data hasn't arrived in 4s, ball turns Orange
-        bool trades_stalled = (sData.last_trade_time == 0) || (now - sData.last_trade_time > 4.0);
-        bool depth_stalled  = (sData.last_depth_time == 0) || (now - sData.last_depth_time > 4.0);
-        if (trades_stalled || depth_stalled) all_modules_healthy = false;
-
-        // --- WATCHDOG TRIGGER ---
-        // Only trigger after 20 seconds of empty data to allow Futures to start up
-        if (now - last_reconnect_execute_time > 20.0) {
-            if (trades_stalled || depth_stalled) {
-                any_module_stuck = true;
-            }
-        }
+        bool dom_open   = m_dom_module.is_open          && m_dom_module.current_symbol          == sym;
+        bool trade_open = (m_tape_module.is_open         && m_tape_module.current_symbol         == sym)
+                       || (m_candle_chart_module.is_open && m_candle_chart_module.current_symbol == sym);
+        if (dom_open   && !sData.snapshot_loaded)                      all_ok = false;
+        if (trade_open && sData.tape.empty() && sData.candles.empty()) all_ok = false;
     }
-
-    if (provider.connection_status != 0) {
-        provider.connection_status = (!all_modules_healthy || any_module_stuck) ? 1 : 2;
+    provider.connection_status = all_ok ? 2 : 1;
+ 
+    // --- WATCHDOG: reconnect only after an extended silence ---
+    // 30s grace on first connect (data needs time to flow after connect).
+    // 60s grace after data was previously flowing (longer = fewer reconnects).
+    // Exponential backoff: 5 -> 10 -> 20 -> 40 -> 80 -> 120s max.
+    bool watchdog_fire = false;
+    if (!all_ok)
+    {
+        if (stuck_since == 0) stuck_since = now;
+        double grace = (reconnect_backoff <= 5.0) ? 30.0 : 60.0;
+        if (now - stuck_since > grace) watchdog_fire = true;
+    }
+    else
+    {
+        stuck_since       = 0;
+        reconnect_backoff = 5.0;  // healthy connection resets backoff
     }
 
     bool symbols_changed = (symbols != m_last_subscribed_symbols);
-    bool force_clicked = m_market_data.m_reconnect_requested;
-
-    if (symbols_changed || force_clicked || any_module_stuck) 
+    bool market_changed  = (m_market_data.m_is_futures != last_is_futures);
+    bool force           = m_market_data.m_reconnect_requested;
+ 
+    if (!symbols_changed && !market_changed && !force && !watchdog_fire) return;
+ 
+    // Respect backoff for watchdog-triggered reconnects
+    if (watchdog_fire && !force && !market_changed && !symbols_changed)
     {
-        // Don't spam Binance: minimum 5s wait for changes, 15s for watchdog
-        double cooldown = (any_module_stuck && !force_clicked) ? 15.0 : 5.0;
-        if (now - last_reconnect_execute_time < cooldown) return;
-
-        last_reconnect_execute_time = now;
-        m_market_data.m_reconnect_requested = false;
-        
-        provider.end(); 
-        {
-            std::lock_guard<std::recursive_mutex> lock(m_market_data.mtx);
-            for (const auto& s : symbols) {
-                auto& sData = m_market_data.get(s);
-                sData.candles.clear(); sData.tape.clear();
-                sData.market_buys.clear(); sData.market_sells.clear();
-                sData.snapshot_loaded = false;
-                sData.last_trade_time = 0; sData.last_depth_time = 0;
-            }
-        }
-        for (const auto& s : symbols) provider.fetch_dom_snapshot(s, m_market_data.m_is_futures);
-        provider.start_multi(symbols, m_market_data.m_is_futures);
-        m_last_subscribed_symbols = symbols;
+        if (now - last_reconnect_time < reconnect_backoff) return;
+        reconnect_backoff = std::min(reconnect_backoff * 2.0, 120.0);
     }
+    else
+    {
+        reconnect_backoff = 5.0;
+    }
+ 
+    if (force)              std::cout << "[Network] Manual reconnect." << std::endl;
+    else if (watchdog_fire) std::cout << "[Watchdog] No data for " << (int)(now - stuck_since)
+                                      << "s, reconnecting (next backoff=" << (int)reconnect_backoff << "s)..." << std::endl;
+    else                    std::cout << "[Network] Config changed, reconnecting." << std::endl;
+ 
+    last_reconnect_time = now;
+    last_is_futures     = m_market_data.m_is_futures;
+    stuck_since         = 0;
+    m_market_data.m_reconnect_requested = false;
+ 
+    provider.end();
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_market_data.mtx);
+        for (const auto& s : symbols)
+        {
+            auto& sData = m_market_data.get(s);
+            sData.candles.clear();     sData.tape.clear();
+            sData.full_asks.clear();   sData.full_bids.clear();
+            sData.ask_sums.clear();    sData.bid_sums.clear();
+            sData.market_buys.clear(); sData.market_sells.clear();
+            sData.snapshot_loaded = false;
+            sData.dom_dirty       = true;
+            sData.running_cvd     = 0;
+            sData.max_market_vol  = 1.0;
+        }
+    }
+ 
+    for (const auto& s : symbols)
+        provider.fetch_dom_snapshot(s, m_market_data.m_is_futures);
+ 
+    provider.start_multi(symbols, m_market_data.m_is_futures);
+    m_last_subscribed_symbols = symbols;
+ 
+    std::cout << "[WS] Subscriptions restarted for: ";
+    for (auto& s : symbols) std::cout << s << " ";
+    std::cout << std::endl;
 }
 
 void Application::control_panel(NetworkLayer& provider)
@@ -530,13 +459,13 @@ void Application::control_panel(NetworkLayer& provider)
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
-
+ 
             ImVec4 pending_col = ImVec4(0.9f, 0.45f, 0.0f, 1.0f);
             ImVec4 normal_btn_col = ImGui::GetStyle().Colors[ImGuiCol_Button];
             ImVec4 active_col = m_market_data.m_reconnect_requested ? pending_col : normal_btn_col;
-
+ 
             ImGui::PushStyleColor(ImGuiCol_Button, active_col);
-
+ 
             // Apply & Connect
             if (ImGui::Button("Apply & Connect", ImVec2(table_width, 0))) 
             {
@@ -548,9 +477,9 @@ void Application::control_panel(NetworkLayer& provider)
             {
                 m_market_data.m_reconnect_requested = true; 
             }
-
+ 
             ImGui::PopStyleColor();
-
+ 
             ImGui::Spacing();
             ImGui::TextDisabled("Note: Reconnecting will clear current buffers.");
             
@@ -561,7 +490,7 @@ void Application::control_panel(NetworkLayer& provider)
             ImGui::SameLine();
             if (provider.connection_status == 2) ImGui::TextColored(ImVec4(0,1,0,1), "HEALTHY");
             else ImGui::TextColored(ImVec4(1,0.5f,0,1), "STALLED/CONNECTING");
-
+ 
             ImGui::PopStyleVar(2);
             ImGui::EndTabItem();
         }

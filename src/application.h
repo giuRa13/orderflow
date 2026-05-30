@@ -36,6 +36,7 @@ private:
     int   m_frame_count = 0;
     double m_fps_timer = 0.0;
 
+	bool m_last_is_futures = false;
 	int m_force_tab_index = -1;
 	bool m_show_control_panel = true;
 

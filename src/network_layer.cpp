@@ -5,28 +5,23 @@
 NetworkLayer::NetworkLayer(MarketData& data) : m_data(data) 
 {
     ix::initNetSystem(); 
-    m_ws.setPingInterval(30);
-    //m_ws.enableAutomaticReconnection();
+    m_ws_market.setPingInterval(30);
+    m_ws_public.setPingInterval(30);
 }
-
+ 
 NetworkLayer::~NetworkLayer()
 {
     this->end(); 
     ix::uninitNetSystem();
 }
-
+ 
 void NetworkLayer::end()
 {
-    m_ws.stop();
+    m_ws_market.stop();
+    m_ws_public.stop();
 } 
 
-double GetTimeNow() 
-{
-    auto now = std::chrono::steady_clock::now();
-    return std::chrono::duration<double>(now.time_since_epoch()).count();
-}
-
-void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_futures) 
+/*void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_futures) 
 {        
     std::string base = is_futures ? 
         "wss://fstream.binance.com/stream?streams=" 
@@ -52,9 +47,7 @@ void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_fut
 
                 std::string stream = root["stream"]; // DO NOT tolower this
                 auto& data = root["data"];
-                // Get the event type (Always "aggTrade", "depthUpdate", or "bookTicker")
-            if (!data.contains("e")) return;
-            std::string event_type = data["e"].get<std::string>();
+
                 std::string symbol = stream.substr(0, stream.find('@'));
                 std::string stream_lower = stream;
                 std::transform(stream_lower.begin(), stream_lower.end(), stream_lower.begin(), ::tolower);
@@ -62,7 +55,7 @@ void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_fut
                 std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
                 auto& sData = m_data.get(symbol);
 
-                /*if (stream_lower.find("@depth") != std::string::npos) 
+                if (stream_lower.find("@depth") != std::string::npos) 
                 {
                     sData.last_depth_time = GetTimeNow();
                     process_depth_diff(symbol, data);
@@ -75,22 +68,7 @@ void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_fut
                 else if (stream_lower.find("@bookticker") != std::string::npos) // Lowercase t
                 {
                     process_book_ticker(symbol, data);
-                }*/
-                // IDENTIFY STREAM BY EVENT TYPE (NOT BY STRING FIND)
-            if (event_type == "depthUpdate") 
-            {
-                sData.last_depth_time = GetTimeNow();
-                process_depth_diff(symbol, data);
-            } 
-            else if (event_type == "aggTrade") 
-            {
-                sData.last_trade_time = GetTimeNow(); 
-                process_tick_data(symbol, data);
-            }
-            else if (event_type == "bookTicker") 
-            {
-                process_book_ticker(symbol, data);
-            }
+                }
             } 
             catch (const std::exception& e) 
             {
@@ -114,177 +92,223 @@ void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_fut
         }
     });
     m_ws.start();
+}*/
+void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_futures) 
+{
+    std::string market_streams;
+    std::string public_streams;
+    for (auto& s : symbols) {
+        market_streams += s + "@aggTrade/";
+        public_streams += s + "@bookTicker/" + s + "@depth@100ms/";
+    }
+    if (!market_streams.empty()) market_streams.pop_back();
+    if (!public_streams.empty()) public_streams.pop_back();
+ 
+    if (is_futures)
+    {
+        // Since Binance's April 2026 migration, aggTrade is on /market and
+        // depth/bookTicker are on /public — they CANNOT share a connection.
+        std::string market_url = "wss://fstream.binance.com/market/stream?streams=" + market_streams;
+        std::string public_url = "wss://fstream.binance.com/public/stream?streams=" + public_streams;
+ 
+        m_ws_market.setUrl(market_url);
+        m_ws_public.setUrl(public_url);
+ 
+        auto make_callback = [this](bool is_market) {
+            return [this, is_market](const ix::WebSocketMessagePtr& msg) {
+                if (msg->type == ix::WebSocketMessageType::Message) 
+                {
+                    if (is_market) connection_status = 2;
+                    try {
+                        auto root = nlohmann::json::parse(msg->str);
+                        if (root.find("stream") == root.end()) return;
+                        std::string stream_name = root["stream"];
+                        auto& data = root["data"];
+                        std::string symbol = stream_name.substr(0, stream_name.find('@'));
+                        if      (stream_name.find("@aggTrade")   != std::string::npos) process_tick_data(symbol, data);
+                        else if (stream_name.find("@bookTicker") != std::string::npos) process_book_ticker(symbol, data);
+                        else if (stream_name.find("@depth")      != std::string::npos) process_depth_diff(symbol, data);
+                    } catch (const std::exception& e) {
+                        std::cerr << "[WS] Parse error: " << e.what() << std::endl;
+                    }
+                }
+                else if (msg->type == ix::WebSocketMessageType::Open)
+                {
+                    if (is_market) { connection_status = 1; std::cout << "[WS] Market connected." << std::endl; }
+                    else                                     std::cout << "[WS] Public connected." << std::endl;
+                }
+                else if (msg->type == ix::WebSocketMessageType::Error)
+                {
+                    if (is_market) connection_status = 0;
+                    std::cerr << "[WS] Error: " << msg->errorInfo.reason << std::endl;
+                }
+                else if (msg->type == ix::WebSocketMessageType::Close)
+                {
+                    if (is_market) connection_status = 0;
+                    std::cout << "[WS] " << (is_market ? "Market" : "Public") << " closed." << std::endl;
+                }
+            };
+        };
+ 
+        m_ws_market.setOnMessageCallback(make_callback(true));
+        m_ws_public.setOnMessageCallback(make_callback(false));
+        m_ws_market.start();
+        m_ws_public.start();
+    }
+    else
+    {
+        // Spot: single combined socket(old URL still works fine)
+        std::string url = "wss://stream.binance.com:9443/stream?streams="
+                        + market_streams + "/" + public_streams;
+ 
+        m_ws_market.setUrl(url);
+        m_ws_market.setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
+            if (msg->type == ix::WebSocketMessageType::Message) 
+            {
+                connection_status = 2;
+                try {
+                    auto root = nlohmann::json::parse(msg->str);
+                    if (root.find("stream") == root.end()) return;
+                    std::string stream_name = root["stream"];
+                    auto& data = root["data"];
+                    std::string symbol = stream_name.substr(0, stream_name.find('@'));
+                    if      (stream_name.find("@aggTrade")   != std::string::npos) process_tick_data(symbol, data);
+                    else if (stream_name.find("@bookTicker") != std::string::npos) process_book_ticker(symbol, data);
+                    else if (stream_name.find("@depth")      != std::string::npos) process_depth_diff(symbol, data);
+                } catch (const std::exception& e) {
+                    std::cerr << "[WS] Parse error: " << e.what() << std::endl;
+                }
+            }
+            else if (msg->type == ix::WebSocketMessageType::Open)  { connection_status = 1; std::cout << "[WS] Connected." << std::endl; }
+            else if (msg->type == ix::WebSocketMessageType::Error) { connection_status = 0; std::cerr << "[WS] Error: " << msg->errorInfo.reason << std::endl; }
+            else if (msg->type == ix::WebSocketMessageType::Close) { connection_status = 0; std::cout << "[WS] Closed." << std::endl; }
+        });
+        m_ws_market.start();
+    }
 }
-
+ 
 void NetworkLayer::process_tick_data(const std::string& symbol, const nlohmann::json& j) 
 {
-    //std::cout << "!!!!!!!!!  Tick received for " << symbol << " Price: " << j["p"] << std::endl;
     try 
     {
-       // Robust parsing for p and q (handle both string and number)
-        double price = j["p"].is_string() ? std::stod(j["p"].get<std::string>()) : j["p"].get<double>();
-        double qty   = j["q"].is_string() ? std::stod(j["q"].get<std::string>()) : j["q"].get<double>();
-
-        // Trade time handling
-        long long raw_time = j["T"].get<long long>();
-        double time = (double)raw_time / 1000.0;
-        
-        // Side handling (m = buyer is maker)
-        bool is_sell = j["m"].get<bool>();
-        double delta = is_sell ? -qty : qty;
-
-        SymbolData& sData = m_data.get(symbol); // Mutex already locked in caller
-        
-        // Update DOM Market Orders
+        double price    = std::stod(j["p"].get<std::string>());
+        double qty      = std::stod(j["q"].get<std::string>());
+        long long raw_t = j["T"].get<long long>(); 
+        double time     = (double)raw_t / 1000.0;
+        bool is_sell    = j["m"].get<bool>();
+        double delta    = is_sell ? -qty : qty;
+ 
+        std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
+        SymbolData& sData = m_data.get(symbol);
+        sData.last_update_time = glfwGetTime();
+ 
         double step = m_data.dom_step;
         double bucket_p = std::floor(price / step) * step;
-        if (is_sell) {
-            sData.market_sells[bucket_p] += qty;
-            sData.last_sell_time[bucket_p] = time;
-        } else {
-            sData.market_buys[bucket_p] += qty;
-            sData.last_buy_time[bucket_p] = time;
-        }
-
-        // Scaling, CVD, and Tape updates...
+        if (is_sell) { sData.market_sells[bucket_p] += qty; sData.last_sell_time[bucket_p] = time; }
+        else         { sData.market_buys[bucket_p]  += qty; sData.last_buy_time[bucket_p]  = time; }
         if (sData.market_sells[bucket_p] > sData.max_market_vol) sData.max_market_vol = sData.market_sells[bucket_p];
-        if (sData.market_buys[bucket_p] > sData.max_market_vol)  sData.max_market_vol = sData.market_buys[bucket_p];
+        if (sData.market_buys[bucket_p]  > sData.max_market_vol) sData.max_market_vol = sData.market_buys[bucket_p];
+ 
         sData.running_cvd += delta;
         if (qty > sData.max_tape_qty) sData.max_tape_qty = qty;
-
+ 
         sData.tape.push_front({time, price, qty, is_sell, sData.last_best_bid, sData.last_best_ask});
         if (sData.tape.size() > m_data.m_max_tape_rows) sData.tape.pop_back();
-
-        // Candle update logic...
-        double tf = m_data.tick_timeframe;
-        double bucket_start = std::floor(time / (tf > 0 ? tf : 1.0)) * (tf > 0 ? tf : 1.0);
-        if (sData.candles.empty() || sData.candles.back().time < bucket_start) {
-            sData.candles.push_back({bucket_start, price, price, price, price, sData.running_cvd, sData.running_cvd, sData.running_cvd, sData.running_cvd});
-        } else {
+ 
+        double tf = m_data.tick_timeframe > 0.0 ? m_data.tick_timeframe : 1.0;
+        double bucket_start = std::floor(time / tf) * tf;
+        if (sData.candles.empty() || sData.candles.back().time < bucket_start) 
+        {
+            TickCandle nc;
+            nc.time = bucket_start;
+            nc.open = nc.high = nc.low = nc.close = price;
+            nc.cvd_open = nc.cvd_high = nc.cvd_low = nc.cvd_close = sData.running_cvd;
+            sData.candles.push_back(nc);
+        } 
+        else 
+        {
             TickCandle& cur = sData.candles.back();
             cur.high = std::max(cur.high, price); cur.low = std::min(cur.low, price); cur.close = price;
-            cur.cvd_high = std::max(cur.cvd_high, sData.running_cvd); cur.cvd_low = std::min(cur.cvd_low, sData.running_cvd); cur.cvd_close = sData.running_cvd;
+            cur.cvd_high = std::max(cur.cvd_high, sData.running_cvd);
+            cur.cvd_low  = std::min(cur.cvd_low,  sData.running_cvd);
+            cur.cvd_close = sData.running_cvd;
         }
         if (sData.candles.size() > 1000) sData.candles.erase(sData.candles.begin());
     } 
-    catch (const std::exception& e) 
-    {
-        std::cerr << "JSON Parse Error: " << e.what() << std::endl;
-    }
+    catch (const std::exception& e) { std::cerr << "Tick parse error: " << e.what() << std::endl; }
 }
-
+ 
 void NetworkLayer::process_book_ticker(const std::string& symbol, const nlohmann::json& j)
 {
     if (j.find("b") == j.end() || j.find("a") == j.end()) return;
-
     std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
     SymbolData& sData = m_data.get(symbol);
-        
-    // b = best bid price, a = best ask price
     sData.last_best_bid = std::stod(j["b"].get<std::string>());
     sData.last_best_ask = std::stod(j["a"].get<std::string>());
 }
-
+ 
 void NetworkLayer::fetch_dom_snapshot(const std::string& symbol, bool is_futures) 
 {
     std::string symUpper = symbol;
-    for (auto & c: symUpper) c = toupper(c);
-
-    std::string baseUrl = is_futures ? "https://fapi.binance.com" : "https://api.binance.com";
-    std::string endpoint = is_futures ? "/fapi/v1/depth" : "/api/v3/depth";
-    std::string url = baseUrl + endpoint + "?symbol=" + symUpper + "&limit=100";
-
-    std::cout << "[REST] Fetching from: " << url << std::endl;
-
+    for (auto& c : symUpper) c = toupper(c);
+ 
+    std::string url = is_futures ?
+        "https://fapi.binance.com/fapi/v1/depth?symbol=" + symUpper + "&limit=1000" :
+        "https://api.binance.com/api/v3/depth?symbol="   + symUpper + "&limit=1000";
+ 
+    std::cout << "[REST] Fetching: " << url << std::endl;
+ 
     ix::HttpClient httpClient;
     auto args = std::make_shared<ix::HttpRequestArgs>();
     args->extraHeaders["User-Agent"] = "ORFLterminal/1.0";
     args->followRedirects = true;
     auto response = httpClient.get(url, args);
-
+ 
     if (response->statusCode == 200) 
     {
         try 
         {
             auto j = nlohmann::json::parse(response->body);
-            
             std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
             auto& sData = m_data.get(symbol);
-
             sData.full_asks.clear();
             sData.full_bids.clear();
             sData.last_update_id = j["lastUpdateId"].get<long long>();
-
-            for (auto& a : j["asks"]) 
-                sData.full_asks[std::stod(a[0].get<std::string>())] = std::stod(a[1].get<std::string>());
-            for (auto& b : j["bids"]) 
-                sData.full_bids[std::stod(b[0].get<std::string>())] = std::stod(b[1].get<std::string>());
-
+            for (auto& a : j["asks"]) sData.full_asks[std::stod(a[0].get<std::string>())] = std::stod(a[1].get<std::string>());
+            for (auto& b : j["bids"]) sData.full_bids[std::stod(b[0].get<std::string>())] = std::stod(b[1].get<std::string>());
             sData.snapshot_loaded = true;
             sData.dom_dirty = true;
-            std::cout << "[REST] Snapshot loaded for " << symUpper << " at ID " << sData.last_update_id << std::endl;
+            std::cout << "[REST] Snapshot OK: " << symUpper << " ID=" << sData.last_update_id << std::endl;
         } 
-        catch (const std::exception& e) 
-        {
-            std::cerr << "[REST] JSON Error: " << e.what() << std::endl;
-        }
+        catch (const std::exception& e) { std::cerr << "[REST] Parse error: " << e.what() << std::endl; }
     }
     else 
     {
-        // This will now print why it failed
-        std::cerr << "[REST] FAILED! Status: " << response->statusCode << std::endl;
-        std::cerr << "[REST] Error Message: " << response->errorMsg << std::endl;
-        if (!response->body.empty())
-            std::cerr << "[REST] Payload: " << response->body << std::endl;
+        std::cerr << "[REST] FAILED status=" << response->statusCode << " msg=" << response->errorMsg << std::endl;
+        if (!response->body.empty()) std::cerr << "[REST] body=" << response->body << std::endl;
     }
 }
-
-//  instead of overwriting the book, we update it. If a quantity is "0", we remove the level
+ 
 void NetworkLayer::process_depth_diff(const std::string& symbol, const nlohmann::json& j) 
 {
     std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
     auto& sData = m_data.get(symbol);
     sData.last_update_time = glfwGetTime();
-    sData.last_depth_time = GetTimeNow();
-
-    // In Binance Futures, the first event should have u >= U and U <= lastUpdateId+1
-    // For simplicity, we just discard any events where the final update ID 'u' 
-    // is older than our current snapshot ID.
-    long long u = j["u"].get<long long>(); // Final update ID in event
+ 
+    long long u = j["u"].get<long long>();
     if (u <= sData.last_update_id) return; 
-
-    // apply Asks
-    for (auto& a : j["a"]) 
-    {
-        double p = std::stod(a[0].get<std::string>());
-        double q = std::stod(a[1].get<std::string>());
-        if (q == 0.0) 
-            sData.full_asks.erase(p);
-        else          
-            sData.full_asks[p] = q;
+ 
+    for (auto& a : j["a"]) {
+        double p = std::stod(a[0].get<std::string>()), q = std::stod(a[1].get<std::string>());
+        if (q == 0.0) sData.full_asks.erase(p); else sData.full_asks[p] = q;
     }
-
-    // apply Bids
-    for (auto& b : j["b"]) 
-    {
-        double p = std::stod(b[0].get<std::string>());
-        double q = std::stod(b[1].get<std::string>());
-        if (q == 0.0) 
-            sData.full_bids.erase(p);
-        else          
-            sData.full_bids[p] = q;
+    for (auto& b : j["b"]) {
+        double p = std::stod(b[0].get<std::string>()), q = std::stod(b[1].get<std::string>());
+        if (q == 0.0) sData.full_bids.erase(p); else sData.full_bids[p] = q;
     }
-
-    // update the ID so we know where we are
     sData.last_update_id = u;
-
-    // Pruning (performance)
-    // Keep 100 levels on each side so the grouping math remains fast
-    while (sData.full_asks.size() > 1000) 
-        sData.full_asks.erase(sData.full_asks.begin()); // erase highest ask
-    while (sData.full_bids.size() > 1000) 
-        sData.full_bids.erase(std::prev(sData.full_bids.end())); // erase lowest bid
-
+    while (sData.full_asks.size() > 1000) sData.full_asks.erase(sData.full_asks.begin());
+    while (sData.full_bids.size() > 1000) sData.full_bids.erase(std::prev(sData.full_bids.end()));
     sData.dom_dirty = true; 
 }
 /* 1 - Storage: std::map with 2,000 entries (1k bid + 1k ask) is roughly 120 KB of data. That is nothing for a modern PC.
