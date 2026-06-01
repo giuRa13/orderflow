@@ -21,78 +21,6 @@ void NetworkLayer::end()
     m_ws_public.stop();
 } 
 
-/*void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_futures) 
-{        
-    std::string base = is_futures ? 
-        "wss://fstream.binance.com/stream?streams=" 
-        : "wss://stream.binance.com:9443/stream?streams=";
-
-    std::string stream_path = "";
-    for (auto& s : symbols) 
-    {
-        std::string sym = s;
-        std::transform(sym.begin(), sym.end(), sym.begin(), ::tolower);
-        stream_path += sym + "@aggTrade/" + sym + "@bookTicker/" + sym + "@depth@100ms/";
-    }
-
-    if (!stream_path.empty()) stream_path.pop_back(); // remove last '/'
-
-    m_ws.setUrl(base + stream_path);
-
-    m_ws.setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
-        if (msg->type == ix::WebSocketMessageType::Message) 
-        {
-            try {
-                auto root = nlohmann::json::parse(msg->str);
-
-                std::string stream = root["stream"]; // DO NOT tolower this
-                auto& data = root["data"];
-
-                std::string symbol = stream.substr(0, stream.find('@'));
-                std::string stream_lower = stream;
-                std::transform(stream_lower.begin(), stream_lower.end(), stream_lower.begin(), ::tolower);
-
-                std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
-                auto& sData = m_data.get(symbol);
-
-                if (stream_lower.find("@depth") != std::string::npos) 
-                {
-                    sData.last_depth_time = GetTimeNow();
-                    process_depth_diff(symbol, data);
-                } 
-                else if (stream_lower.find("@aggtrade") != std::string::npos) // Lowercase T
-                {
-                    sData.last_trade_time = GetTimeNow(); 
-                    process_tick_data(symbol, data);
-                }
-                else if (stream_lower.find("@bookticker") != std::string::npos) // Lowercase t
-                {
-                    process_book_ticker(symbol, data);
-                }
-            } 
-            catch (const std::exception& e) 
-            {
-                std::cerr << "[JSON] Global Parse Error: " << e.what() << std::endl;
-            }
-        }
-        else if (msg->type == ix::WebSocketMessageType::Open) 
-        {
-            connection_status = 1; // Stay Orange/Yellow until first data packet
-            std::cout << "[WS] Successfully connected to Binance Futures!" << std::endl;
-        } 
-        else if (msg->type == ix::WebSocketMessageType::Error)
-        {
-            connection_status = 0;
-            std::cerr << "[WS] Error: " << msg->errorInfo.reason << std::endl;
-        }
-        else if (msg->type == ix::WebSocketMessageType::Close) 
-        {
-            connection_status = 0;
-            std::cout << "[WS] Connection Closed." << std::endl;
-        }
-    });
-    m_ws.start();
-}*/
 void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_futures) 
 {
     std::string market_streams;
@@ -204,8 +132,47 @@ void NetworkLayer::process_tick_data(const std::string& symbol, const nlohmann::
  
         double step = m_data.dom_step;
         double bucket_p = std::floor(price / step) * step;
-        if (is_sell) { sData.market_sells[bucket_p] += qty; sData.last_sell_time[bucket_p] = time; }
-        else         { sData.market_buys[bucket_p]  += qty; sData.last_buy_time[bucket_p]  = time; }
+        if (is_sell) 
+        { 
+            // track which bucket was last active per side. 
+            // When price moves to a new bucket, mark the old one, 
+            // if price returns to a marked bucket, reset it before accumulating. (Uses a generation counter so it's instant)
+            if (!m_data.m_dom_cumulative)
+            {
+                // New bucket visited — increment sell generation
+                if (bucket_p != sData.m_last_sell_bucket) 
+                {
+                    sData.m_sell_gen++;
+                    sData.m_last_sell_bucket = bucket_p;
+                }
+                // Price returned to this bucket from elsewhere — reset it for fresh accumulation
+                if (sData.m_market_sells_gen[bucket_p] != sData.m_sell_gen) 
+                {
+                    sData.market_sells[bucket_p] = 0.0;
+                    sData.m_market_sells_gen[bucket_p] = sData.m_sell_gen;
+                }
+            }
+            sData.market_sells[bucket_p] += qty; 
+            sData.last_sell_time[bucket_p] = glfwGetTime(); 
+        }
+        else         
+        { 
+            if (!m_data.m_dom_cumulative)
+            {
+                if (bucket_p != sData.m_last_buy_bucket) 
+                {
+                    sData.m_buy_gen++;
+                    sData.m_last_buy_bucket = bucket_p;
+                }
+                if (sData.m_market_buys_gen[bucket_p] != sData.m_buy_gen) 
+                {
+                    sData.market_buys[bucket_p] = 0.0;
+                    sData.m_market_buys_gen[bucket_p] = sData.m_buy_gen;
+                }
+            }
+            sData.market_buys[bucket_p] += qty; 
+            sData.last_buy_time[bucket_p]  = glfwGetTime(); 
+        }
         if (sData.market_sells[bucket_p] > sData.max_market_vol) sData.max_market_vol = sData.market_sells[bucket_p];
         if (sData.market_buys[bucket_p]  > sData.max_market_vol) sData.max_market_vol = sData.market_buys[bucket_p];
  
@@ -316,6 +283,80 @@ void NetworkLayer::process_depth_diff(const std::string& symbol, const nlohmann:
 *       On a modern CPU, iterating 2,000 doubles and doing a floor + map insert takes about 0.1 to 0.3 milliseconds.
 *       Since this only happens 10 times per second (because of your dom_dirty flag), the impact on your FPS is zero.
 */
+
+
+/*void NetworkLayer::start_multi(const std::set<std::string>& symbols, bool is_futures) 
+{        
+    std::string base = is_futures ? 
+        "wss://fstream.binance.com/stream?streams=" 
+        : "wss://stream.binance.com:9443/stream?streams=";
+
+    std::string stream_path = "";
+    for (auto& s : symbols) 
+    {
+        std::string sym = s;
+        std::transform(sym.begin(), sym.end(), sym.begin(), ::tolower);
+        stream_path += sym + "@aggTrade/" + sym + "@bookTicker/" + sym + "@depth@100ms/";
+    }
+
+    if (!stream_path.empty()) stream_path.pop_back(); // remove last '/'
+
+    m_ws.setUrl(base + stream_path);
+
+    m_ws.setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
+        if (msg->type == ix::WebSocketMessageType::Message) 
+        {
+            try {
+                auto root = nlohmann::json::parse(msg->str);
+
+                std::string stream = root["stream"]; // DO NOT tolower this
+                auto& data = root["data"];
+
+                std::string symbol = stream.substr(0, stream.find('@'));
+                std::string stream_lower = stream;
+                std::transform(stream_lower.begin(), stream_lower.end(), stream_lower.begin(), ::tolower);
+
+                std::lock_guard<std::recursive_mutex> lock(m_data.mtx);
+                auto& sData = m_data.get(symbol);
+
+                if (stream_lower.find("@depth") != std::string::npos) 
+                {
+                    sData.last_depth_time = GetTimeNow();
+                    process_depth_diff(symbol, data);
+                } 
+                else if (stream_lower.find("@aggtrade") != std::string::npos) // Lowercase T
+                {
+                    sData.last_trade_time = GetTimeNow(); 
+                    process_tick_data(symbol, data);
+                }
+                else if (stream_lower.find("@bookticker") != std::string::npos) // Lowercase t
+                {
+                    process_book_ticker(symbol, data);
+                }
+            } 
+            catch (const std::exception& e) 
+            {
+                std::cerr << "[JSON] Global Parse Error: " << e.what() << std::endl;
+            }
+        }
+        else if (msg->type == ix::WebSocketMessageType::Open) 
+        {
+            connection_status = 1; // Stay Orange/Yellow until first data packet
+            std::cout << "[WS] Successfully connected to Binance Futures!" << std::endl;
+        } 
+        else if (msg->type == ix::WebSocketMessageType::Error)
+        {
+            connection_status = 0;
+            std::cerr << "[WS] Error: " << msg->errorInfo.reason << std::endl;
+        }
+        else if (msg->type == ix::WebSocketMessageType::Close) 
+        {
+            connection_status = 0;
+            std::cout << "[WS] Connection Closed." << std::endl;
+        }
+    });
+    m_ws.start();
+}*/
 
  /*void start(const std::string& symbol, bool isFutures) 
 {

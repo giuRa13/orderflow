@@ -16,6 +16,7 @@ private:
     void render_market_cell(double qty, double max_vol, ImVec4 color, ImVec4 text_color, bool align_right, bool center_text, double last_activity_time);
     void render_spread_row(SymbolData& sData, MarketData& data, double last_price);
     void render_top_ui(MarketData& data, SymbolData& sData);
+    void render_main_table(MarketData& data, SymbolData& sData, double step, double live_bucket);
 
     // states
     std::string m_last_symbol = ""; 
@@ -48,4 +49,5 @@ private:
     int m_price_decimals = 2;
     int m_limit_decimals = 1;
     int m_market_decimals = 1;
+    float m_highlight_fadeout_ms = 1000.0f;
 };

@@ -283,6 +283,12 @@ void Application::manage_connections(NetworkLayer& provider)
             sData.dom_dirty       = true;
             sData.running_cvd     = 0;
             sData.max_market_vol  = 1.0;
+            sData.m_sell_gen = 0;     
+            sData.m_buy_gen = 0;
+            sData.m_last_sell_bucket = -1e30; 
+            sData.m_last_buy_bucket = -1e30;
+            sData.m_market_sells_gen.clear(); 
+            sData.m_market_buys_gen.clear();
         }
     }
  

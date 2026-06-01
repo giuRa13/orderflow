@@ -28,7 +28,7 @@ private:
     void process_depth_diff(const std::string& symbol, const nlohmann::json& j);
 
 private:
-     // Futures needs two sockets: aggTrade is on /market, depth+bookTicker on /public
+    // Futures needs two sockets: aggTrade is on /market, depth+bookTicker on /public
     // Spot uses a single combined socket (old URL still works)
     ix::WebSocket m_ws_market;  // Futures: /market/stream (aggTrade)
                                 // Spot:    combined stream (all three)

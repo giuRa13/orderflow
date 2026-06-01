@@ -8,14 +8,6 @@
 #include<algorithm>
 #include <imgui.h>
 
-/*struct Candle {
-    double time; // Use double for ImPlot time axis
-    double open;
-    double high;
-    double low;
-    double close;
-};*/
-
 struct TickCandle {
 	double time;
 	double open, high, low, close;
@@ -65,6 +57,14 @@ struct SymbolData {
     std::map<double, double> last_sell_time;
     double max_market_vol = 1.0; // For scaling the center bars
 
+    // Non-cumulative mode tracking(DOM market orders): reset a bucket when price returns to it
+    int    m_sell_gen = 0;
+    int    m_buy_gen  = 0;
+    double m_last_sell_bucket = -1e30; // 1×10³⁰ (used as a sentinel value to mean "no bucket has been visited yet")
+    double m_last_buy_bucket  = -1e30; // guarantee that the first trade at any real price will always see bucket_p != m_last_sell_bucket (m_last_sell_bucket = 0.0 at start)
+    std::map<double, int> m_market_sells_gen;
+    std::map<double, int> m_market_buys_gen;
+
     double running_cvd = 0;
     double max_tape_qty = 1.0;
 
@@ -87,6 +87,7 @@ class MarketData
 public:
     std::recursive_mutex mtx;
     std::unordered_map<std::string, SymbolData> assets;
+    bool m_dom_cumulative = false;
 
     // Configuration (Shared across Network and UI)
     double tick_timeframe = 60.0; 
