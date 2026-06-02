@@ -2,6 +2,7 @@
 #include <GLFW/glfw3.h>
 #include <map>
 #include <math.h>
+#include <set>
 
 DOMModule::DOMModule() 
     : BaseModule("DOM") 
@@ -106,16 +107,74 @@ void DOMModule::render_main_table(MarketData& data, SymbolData& sData, double st
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY | 
         ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable;
 
+    // --- PRE-COMPUTE DELTA & VOLUME PROFILE ---
+    // Done before BeginTable so we have POC and value area ready for coloring.
+    struct LevelData { 
+        double delta = 0; 
+        double volume = 0; 
+    };
+    std::map<double, LevelData> levels;
+    double max_abs_delta = 0.001;
+    double max_volume    = 0.001;
+    double total_volume  = 0.0;
+    double poc_price     = m_anchor_bucket;
+    double poc_vol       = 0.0;
+
+    for (int i = VIEW_RANGE; i >= -VIEW_RANGE; i--)
+    {
+        double p     = m_anchor_bucket + (i * step);
+        double buys  = sData.market_buys_cum.count(p)  ? sData.market_buys_cum[p]  : 0.0;
+        double sells = sData.market_sells_cum.count(p) ? sData.market_sells_cum[p] : 0.0;
+        auto& lv     = levels[p];
+        lv.delta     = buys - sells;
+        lv.volume    = buys + sells;
+        max_abs_delta = std::max(max_abs_delta, std::abs(lv.delta));
+        if (lv.volume > max_volume) max_volume = lv.volume;
+        total_volume += lv.volume;
+        if (lv.volume > poc_vol) { poc_vol = lv.volume; poc_price = p; }
+    }
+
+    // Value Area: expand from POC until 70% of total volume is covered.
+    std::set<double> value_area;
+    value_area.insert(poc_price);
+    double va_volume = poc_vol;
+    double va_target = total_volume * 0.70;
+    double up = poc_price + step;
+    double down = poc_price - step;
+    while (va_volume < va_target)
+    {
+        bool   has_up  = levels.count(up)  && levels[up].volume  > 0;
+        bool   has_down  = levels.count(down)  && levels[down].volume  > 0;
+        if (!has_up && !has_down) break;
+        double vol_up  = has_up ? levels[up].volume  : 0.0;
+        double vol_down  = has_down ? levels[down].volume  : 0.0;
+        if (vol_up >= vol_down) 
+        { 
+            va_volume += vol_up; 
+            value_area.insert(up); 
+            up += step; 
+        }
+        else                  
+        { 
+            va_volume += vol_down; 
+            value_area.insert(down); 
+            down -= step; 
+        }
+    }
+
+    // -- COLUMNS ---
     if (!ImGui::BeginTable("##dom", col_number, flags, ImVec2(0, -1))) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Price", ImGuiTableColumnFlags_WidthStretch, 0.20f);
-    ImGui::TableSetupColumn("Bid",   ImGuiTableColumnFlags_WidthStretch, 0.25f);
-    ImGui::TableSetupColumn("Sells", ImGuiTableColumnFlags_WidthStretch, 0.15f);
-    ImGui::TableSetupColumn("Buys",  ImGuiTableColumnFlags_WidthStretch, 0.15f);
-    ImGui::TableSetupColumn("Ask",   ImGuiTableColumnFlags_WidthStretch, 0.25f);
+    ImGui::TableSetupColumn("Bid",   ImGuiTableColumnFlags_WidthStretch, 0.20f);
+    ImGui::TableSetupColumn("Sells", ImGuiTableColumnFlags_WidthStretch, 0.125f);
+    ImGui::TableSetupColumn("Buys",  ImGuiTableColumnFlags_WidthStretch, 0.125f);
+    ImGui::TableSetupColumn("Ask",   ImGuiTableColumnFlags_WidthStretch, 0.20f);
+    ImGui::TableSetupColumn("Delta",   ImGuiTableColumnFlags_WidthStretch, 0.175f);
+    ImGui::TableSetupColumn("Volume",  ImGuiTableColumnFlags_WidthStretch, 0.175f);
     ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < col_number; i++)
     {            
         ImGui::TableSetColumnIndex(i);
         const char* name = ImGui::TableGetColumnName(i);
@@ -176,6 +235,29 @@ void DOMModule::render_main_table(MarketData& data, SymbolData& sData, double st
         ImGui::TableNextColumn();
         if (p > live_bucket) 
             render_dom_bar(sData.ask_sums[p], sData.cached_max_vol, data.bid_color ,right_to_left_ask, center_values_ask);
+
+        // Column 5: Delta 
+        ImGui::TableNextColumn();
+        if (levels.count(p))
+        {
+            double delta = levels[p].delta;
+            if (std::abs(delta) > 0.0000001)
+            {
+                ImVec4 delta_col = (delta >= 0) ? data.ask_color : data.bid_color;
+                render_dom_bar(std::abs(delta), max_abs_delta, delta_col, right_to_left_delta, center_values_delta);
+            }
+        }        
+
+        // Column 6: Volume Profile
+        ImGui::TableNextColumn();
+        if (levels.count(p) && levels[p].volume > 0.0000001)
+        {
+            ImVec4 vp_col;
+            if (p == poc_price)           vp_col = vp_poc_color;
+            else if (value_area.count(p)) vp_col = vp_va_color;
+            else                          vp_col = vp_outside_color;
+            render_dom_bar(levels[p].volume, max_volume, vp_col, right_to_left_volume, center_values_volume);
+        }
     }
         
     if (line_ready) 
@@ -329,6 +411,8 @@ void DOMModule::render_top_ui(MarketData& data, SymbolData& sData)
         std::lock_guard<std::recursive_mutex> lock(data.mtx);
         sData.market_buys.clear();
         sData.market_sells.clear();
+        sData.market_buys_cum.clear();
+        sData.market_sells_cum.clear();
         sData.max_market_vol = 1.0;
         sData.m_sell_gen = 0;     
         sData.m_buy_gen = 0;
@@ -422,6 +506,8 @@ void DOMModule::draw_settings_content(MarketData& data)
     ImGui::TextDisabled("Right to Left Bars");
     ImGui::Checkbox("Ask", &right_to_left_ask);
     ImGui::Checkbox("Bid", &right_to_left_bid);
+    ImGui::Checkbox("Delta", &right_to_left_delta);
+    ImGui::Checkbox("Volume", &right_to_left_volume);
     ImGui::Separator();
     ImGui::Spacing();
 
@@ -430,7 +516,8 @@ void DOMModule::draw_settings_content(MarketData& data)
     ImGui::Checkbox("Center Bid", &center_values_bid);
     ImGui::Checkbox("Center Market Sells", &center_values_market_sells);
     ImGui::Checkbox("Center Market Buys", &center_values_market_buys);
-    ImGui::Checkbox("Market Orders Border", &m_market_orders_border);
+    ImGui::Checkbox("Center Delta",         &center_values_delta);
+    ImGui::Checkbox("Center Volume",        &center_values_volume);
     ImGui::Separator();
     ImGui::Spacing();
 
@@ -445,6 +532,7 @@ void DOMModule::draw_settings_content(MarketData& data)
     ImGui::SetNextItemWidth(150);
     ImGui::SliderFloat("Fadeout (ms)", &m_highlight_fadeout_ms, 100.0f, 5000.0f, "%.0f ms");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("How long the background highlight persists after a trade executes");
+    ImGui::Checkbox("Market Orders Border", &m_market_orders_border);
     ImGui::Separator();
     ImGui::Spacing();
 
@@ -465,6 +553,12 @@ void DOMModule::draw_settings_content(MarketData& data)
     ImGui::ColorEdit4("Bid Bg", &bid_bg_color.x);
     ImGui::ColorEdit4("Buys Text", &buys_text_color.x);
     ImGui::ColorEdit4("Sells text", &sells_text_color.x);
+    ImGui::Spacing();
+
+    ImGui::TextDisabled("Volume Profile Colors");
+    ImGui::ColorEdit4("POC",          &vp_poc_color.x);
+    ImGui::ColorEdit4("Value Area",   &vp_va_color.x);
+    ImGui::ColorEdit4("Outside VA",   &vp_outside_color.x);
     ImGui::Separator();
     ImGui::Spacing();
 }

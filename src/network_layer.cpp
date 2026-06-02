@@ -153,6 +153,7 @@ void NetworkLayer::process_tick_data(const std::string& symbol, const nlohmann::
                 }
             }
             sData.market_sells[bucket_p] += qty; 
+            sData.market_sells_cum[bucket_p] += qty;  // always cumulative
             sData.last_sell_time[bucket_p] = glfwGetTime(); 
         }
         else         
@@ -171,6 +172,7 @@ void NetworkLayer::process_tick_data(const std::string& symbol, const nlohmann::
                 }
             }
             sData.market_buys[bucket_p] += qty; 
+            sData.market_buys_cum[bucket_p] += qty;   // always cumulative
             sData.last_buy_time[bucket_p]  = glfwGetTime(); 
         }
         if (sData.market_sells[bucket_p] > sData.max_market_vol) sData.max_market_vol = sData.market_sells[bucket_p];

@@ -20,7 +20,7 @@ private:
 
     // states
     std::string m_last_symbol = ""; 
-    int col_number = 5;
+    int col_number = 7;
     bool m_last_side_was_sell = false;
     bool m_needs_recenter = true;
     double m_last_recenter_time = 0.0;
@@ -37,12 +37,19 @@ private:
     ImVec4 bid_bg_color  = {0.027f, 0.200f, 0.407f, 1.0f}; // 7, 51, 104
     ImVec4 buys_text_color  = {0.325f, 0.490f, 0.694f, 1.0f}; // 83, 125, 177
     ImVec4 sells_text_color  = {0.752f, 0.313f, 0.301f, 1.0f}; // 192, 80, 77
+    ImVec4 vp_poc_color     = {0.894f,  0.584f, 0.086f,  1.0f};  
+    ImVec4 vp_va_color      = {0.796f, 0.803f, 0.796f, 1.0f};  
+    ImVec4 vp_outside_color = {0.4f, 0.4f, 0.4f, 1.0f};
     bool right_to_left_ask = false;
     bool right_to_left_bid = true;
+    bool right_to_left_delta = true;
+    bool right_to_left_volume = true;
     bool center_values_ask = true;
     bool center_values_bid = true;
     bool center_values_market_sells = true;
     bool center_values_market_buys = true;
+    bool center_values_delta         = true;
+    bool center_values_volume        = true;
     bool m_market_orders_border = false;
     bool m_auto_scroll = true;
     float m_scroll_interval = 8.0f;

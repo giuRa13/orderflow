@@ -272,23 +272,32 @@ void Application::manage_connections(NetworkLayer& provider)
     provider.end();
     {
         std::lock_guard<std::recursive_mutex> lock(m_market_data.mtx);
+        // Full clear only for truly new symbols (not in previous subscription).
+        // Continuing symbols keep their tape/candles/market order history,
+        // only their depth book is refreshed via a new snapshot below.
+        bool full_reset = force || market_changed || watchdog_fire;
         for (const auto& s : symbols)
         {
             auto& sData = m_market_data.get(s);
-            sData.candles.clear();     sData.tape.clear();
-            sData.full_asks.clear();   sData.full_bids.clear();
-            sData.ask_sums.clear();    sData.bid_sums.clear();
-            sData.market_buys.clear(); sData.market_sells.clear();
+            bool is_new = (m_last_subscribed_symbols.find(s) == m_last_subscribed_symbols.end());
+
+            if (full_reset || is_new)
+            {
+                sData.candles.clear();     sData.tape.clear();
+                sData.market_buys.clear(); sData.market_sells.clear();
+                sData.market_buys_cum.clear(); sData.market_sells_cum.clear();
+                sData.running_cvd     = 0;
+                sData.max_market_vol  = 1.0;
+                sData.m_sell_gen = 0;  sData.m_buy_gen = 0;
+                sData.m_last_sell_bucket = -1e30; sData.m_last_buy_bucket = -1e30;
+                sData.m_market_sells_gen.clear(); sData.m_market_buys_gen.clear();
+            }
+            // Depth book always refreshed — snapshot re-fetched below to resync
+            // after the reconnect gap regardless of whether the symbol is new or continuing.
+            sData.full_asks.clear();  sData.full_bids.clear();
+            sData.ask_sums.clear();   sData.bid_sums.clear();
             sData.snapshot_loaded = false;
             sData.dom_dirty       = true;
-            sData.running_cvd     = 0;
-            sData.max_market_vol  = 1.0;
-            sData.m_sell_gen = 0;     
-            sData.m_buy_gen = 0;
-            sData.m_last_sell_bucket = -1e30; 
-            sData.m_last_buy_bucket = -1e30;
-            sData.m_market_sells_gen.clear(); 
-            sData.m_market_buys_gen.clear();
         }
     }
  

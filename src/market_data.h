@@ -52,6 +52,8 @@ struct SymbolData {
     std::map<double, double> bid_sums;
     std::map<double, double> market_sells; 
     std::map<double, double> market_buys;
+    std::map<double, double> market_buys_cum; // Always-cumulative versions — used for Delta and Volume Profile columns.
+    std::map<double, double> market_sells_cum; // ""  ""
     // blink
     std::map<double, double> last_buy_time;  
     std::map<double, double> last_sell_time;
