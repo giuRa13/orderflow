@@ -88,6 +88,85 @@ namespace CommonRender
         ImPlot::PopPlotClipRect();
     }
 
+    /*void draw_bid_ask_lines(double best_bid, double best_ask, ImVec4 bid_color, ImVec4 ask_color)
+    {
+        if (best_bid <= 0.0 || best_ask <= 0.0) return;
+
+        ImDrawList*  draw_list = ImPlot::GetPlotDrawList();
+        ImPlotRect   limits    = ImPlot::GetPlotLimits();
+        const float  dash      = 5.0f;
+        const float  gap       = 4.0f;
+
+        ImPlot::PushPlotClipRect();
+
+        // Shaded spread zone between bid and ask
+        ImVec2 spread_tl = ImPlot::PlotToPixels(limits.X.Min, best_ask);
+        ImVec2 spread_br = ImPlot::PlotToPixels(limits.X.Max, best_bid);
+        ImU32  spread_col = IM_COL32(200, 200, 200, 18);
+        draw_list->AddRectFilled(spread_tl, spread_br, spread_col);
+
+        // Best Bid line
+        {
+            ImVec2 s = ImPlot::PlotToPixels(limits.X.Min, best_bid);
+            ImVec2 e = ImPlot::PlotToPixels(limits.X.Max, best_bid);
+            ImU32  c = ImGui::ColorConvertFloat4ToU32(ImVec4(bid_color.x, bid_color.y, bid_color.z, 0.9f));
+            for (float x = s.x; x < e.x; x += dash + gap)
+                draw_list->AddLine(ImVec2(x, s.y), ImVec2(std::min(x + dash, e.x), s.y), c, 1.5f);
+        }
+    
+        // Best Ask line
+        {
+            ImVec2 s = ImPlot::PlotToPixels(limits.X.Min, best_ask);
+            ImVec2 e = ImPlot::PlotToPixels(limits.X.Max, best_ask);
+            ImU32  c = ImGui::ColorConvertFloat4ToU32(ImVec4(ask_color.x, ask_color.y, ask_color.z, 0.9f));
+            for (float x = s.x; x < e.x; x += dash + gap)
+                draw_list->AddLine(ImVec2(x, s.y), ImVec2(std::min(x + dash, e.x), s.y), c, 1.5f);
+        }
+
+        // Price tags on Y axis
+        ImPlot::TagY(best_bid, bid_color, "B %.2f", best_bid);
+        ImPlot::TagY(best_ask, ask_color, "A %.2f", best_ask);
+    
+        ImPlot::PopPlotClipRect();
+    }*/
+    void draw_bid_ask_lines(double best_bid, double best_ask, double tick_size, ImVec4 bid_color, ImVec4 ask_color, double x_from)
+    {
+        if (best_bid <= 0.0 || best_ask <= 0.0 || tick_size <= 0.0) return;
+    
+        // Snap to tick grid — bid line at its row, ask line exactly one tick above.
+        // The one-tick gap is always the visual separation, same as bookmap.
+        // Mid-point of each tick row, matching bookmap's visual convention (+ tick_size * 0.5)
+        double bid_snapped = std::floor(best_bid / tick_size) * tick_size + tick_size * 0.5;
+        double ask_snapped = bid_snapped + tick_size;
+    
+        ImDrawList*  dl     = ImPlot::GetPlotDrawList();
+        ImPlotRect   limits = ImPlot::GetPlotLimits();
+        const float  dash   = 6.0f;
+        const float  gap    = 4.0f;
+    
+        ImPlot::PushPlotClipRect();
+    
+        auto draw_dashed = [&](double price, ImVec4 color) {
+            //ImVec2 s = ImPlot::PlotToPixels(limits.X.Min, price);
+            double start_x = (x_from > 0.0) ? x_from : limits.X.Min;
+            ImVec2 s = ImPlot::PlotToPixels(start_x, price);
+            ImVec2 e = ImPlot::PlotToPixels(limits.X.Max, price);
+            ImU32  c = ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, 0.9f));
+            for (float x = s.x; x < e.x; x += dash + gap)
+                dl->AddLine(ImVec2(x, s.y), ImVec2(std::min(x + dash, e.x), s.y), c, 1.5f);
+        };
+    
+        draw_dashed(bid_snapped, bid_color);
+        draw_dashed(ask_snapped, ask_color);
+    
+        ImPlot::PopPlotClipRect();
+    
+        //ImPlot::TagY(best_bid, bid_color, "B %.2f", best_bid);
+        //ImPlot::TagY(best_ask, ask_color, "A %.2f", best_ask);
+        ImPlot::TagY(bid_snapped, bid_color, "B %.1f", best_bid);
+        ImPlot::TagY(ask_snapped, ask_color, "A %.1f", best_ask);
+    }
+
     void draw_custom_crosshair(ImVec4 color)
     {
         if (!ImPlot::IsPlotHovered()) return;

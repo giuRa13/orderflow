@@ -10,6 +10,7 @@
 #include <modules/candle_chart_module.h>
 #include <modules/cvd_module.h>
 #include <modules/dom_module.h>
+#include <modules/heatmap_module.h>
 
 class Application
 {
@@ -48,4 +49,5 @@ private:
 	CandleChartModule m_candle_chart_module;
 	CVDModule m_cvd_module;
 	DOMModule m_dom_module;
+	HeatmapModule m_heatmap_module;
 };

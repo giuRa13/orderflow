@@ -15,25 +15,26 @@ void BaseModule::render_standalone(MarketData& data)
 
     if (ImGui::Begin(window_name.c_str(), &is_open)) 
     {
-        render_common_header();
+        render_common_header(data);
         update_content(data);
     }
     ImGui::End();
 }
 
-void BaseModule::render_common_header() 
+void BaseModule::render_common_header(MarketData& data) 
 {
     ImGui::SetNextItemWidth(100);
-    ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue;
-        
-    bool enter = ImGui::InputText("##Sym", symbol_input, sizeof(symbol_input), flags);
-    ImGui::SameLine(0, 2);
-    bool btn = ImGui::Button(ICON_FA_SEARCH);
-    if (enter || btn) 
+    if (ImGui::InputText("##Sym", symbol_input, sizeof(symbol_input), ImGuiInputTextFlags_EnterReturnsTrue)) 
     {
         std::string input_str = symbol_input;
         std::transform(input_str.begin(), input_str.end(), input_str.begin(), ::tolower);
-        ImGui::SetWindowFocus(nullptr);
+        current_symbol = input_str;
+    }
+    ImGui::SameLine(0, 2);
+    if (ImGui::Button(ICON_FA_SEARCH)) 
+    {
+        std::string input_str = symbol_input;
+        std::transform(input_str.begin(), input_str.end(), input_str.begin(), ::tolower);
         current_symbol = input_str;
     }
 
@@ -42,16 +43,18 @@ void BaseModule::render_common_header()
     std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
     ImGui::TextDisabled("| %s", upper.c_str());
 
-    ImGui::SameLine(ImGui::GetWindowWidth() - 40);
-    if (ImGui::Button(ICON_FA_COG)) 
+    // module-specific buttons
+    ImGui::SameLine();
+    render_module_specific_header(data);
+
+    // Pin settings cog to the far right
+    float right_edge = ImGui::GetWindowWidth() - 40.0f;
+    if (ImGui::GetScrollMaxY() > 0) right_edge -= ImGui::GetStyle().ScrollbarSize;
+    
+    ImGui::SameLine(right_edge);
+    if (ImGui::Button(ICON_FA_COG, ImVec2(30, 0))) 
     {
         open_settings = !open_settings;
-        if (open_settings) 
-        {
-            // Force ImGui to bring this specific window ID to the front next frame
-            std::string settings_title = "Settings: " + window_name;
-            ImGui::SetWindowFocus(settings_title.c_str());
-        }
     }
 
     ImGui::Separator();

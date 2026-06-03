@@ -171,11 +171,13 @@ void Application::run()
 
             if (m_tape_module.is_open) m_tape_module.render_standalone(m_market_data);
             if (m_dom_module.is_open) m_dom_module.render_standalone(m_market_data);
+            if (m_heatmap_module.is_open) m_heatmap_module.render_standalone(m_market_data);
 
             if (m_candle_chart_module.is_open) m_candle_chart_module.render_settings_window(m_market_data);
             if (m_cvd_module.is_open)         m_cvd_module.render_settings_window(m_market_data);
             if (m_tape_module.is_open)        m_tape_module.render_settings_window(m_market_data);
             if (m_dom_module.is_open)        m_dom_module.render_settings_window(m_market_data);
+            if (m_heatmap_module.is_open)     m_heatmap_module.render_settings_window(m_market_data);
         }
         m_ImGuiLayer.end();
 
@@ -209,10 +211,11 @@ void Application::manage_connections(NetworkLayer& provider)
     if (m_cvd_module.is_open)          symbols.insert(m_cvd_module.current_symbol);
     if (m_tape_module.is_open)         symbols.insert(m_tape_module.current_symbol);
     if (m_dom_module.is_open)          symbols.insert(m_dom_module.current_symbol);
+    if (m_heatmap_module.is_open)      symbols.insert(m_heatmap_module.current_symbol);
  
     if (symbols.empty()) return;
  
-     // --- STATUS (green only when data is actually flowing) ---
+    // --- STATUS (green only when data is actually flowing) ---
     bool all_ok = true;
     for (const auto& sym : symbols)
     {
@@ -220,8 +223,11 @@ void Application::manage_connections(NetworkLayer& provider)
         bool dom_open   = m_dom_module.is_open          && m_dom_module.current_symbol          == sym;
         bool trade_open = (m_tape_module.is_open         && m_tape_module.current_symbol         == sym)
                        || (m_candle_chart_module.is_open && m_candle_chart_module.current_symbol == sym);
+        bool heatmap_open = m_heatmap_module.is_open  && m_heatmap_module.current_symbol  == sym;
+        
         if (dom_open   && !sData.snapshot_loaded)                      all_ok = false;
         if (trade_open && sData.tape.empty() && sData.candles.empty()) all_ok = false;
+        if (heatmap_open && sData.last_best_bid <= 0.0)                  all_ok = false;
     }
     provider.connection_status = all_ok ? 2 : 1;
  
@@ -429,6 +435,12 @@ void Application::control_panel(NetworkLayer& provider)
                                 [&](){
                                     m_dom_module.is_open = !m_dom_module.is_open;
                                     if(m_dom_module.is_open) ImGui::SetWindowFocus("DOM");
+                                }
+                );
+                AddSelectionRow("Heatmap", m_heatmap_module.is_open,
+                                [&](){
+                                    m_heatmap_module.is_open = !m_heatmap_module.is_open;
+                                    if(m_heatmap_module.is_open) ImGui::SetWindowFocus("Heatmap");
                                 }
                 );
                 ImGui::EndTable();

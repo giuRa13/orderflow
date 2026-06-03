@@ -17,8 +17,9 @@ public:
     BaseModule(const std::string& name);
     virtual ~BaseModule() = default;
 
-    void render_common_header();
+    void render_common_header(MarketData& data);
     void render_standalone(MarketData& data);
+    virtual void render_module_specific_header(MarketData& data) {} 
 
     virtual void update_content(MarketData& data) = 0;
     void render_settings_window(MarketData& data);
