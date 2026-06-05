@@ -24,6 +24,34 @@ void HeatmapModule::sample_bid_ask(double bid, double ask, double now)
         m_history.pop_front();
 }
  
+void HeatmapModule::ingest_trades(const SymbolData& sData)
+{
+    if (sData.tape.empty()) return;
+ 
+    // keep time offset in sync so tape Unix timestamps → glfwGetTime space
+    m_time_offset = glfwGetTime() - sData.tape.front().time;
+
+    // tape[0]=newest, tape[size-1]=oldest — walk newest→oldest, stop at already-processed
+    std::vector<TradePoint> new_trades;
+    for (int i = 0; i < (int)sData.tape.size(); i++)
+    {
+        const auto& t = sData.tape[i];
+        if (t.time <= m_last_processed_tape_time) break;
+        if (t.quantity >= (double)m_min_bubble_size)
+            new_trades.push_back({t.time + m_time_offset, t.price, t.quantity, t.is_sell});
+    }
+    // Insert in chronological order (oldest first) to keep deque sorted
+    for (int i = (int)new_trades.size() - 1; i >= 0; i--)
+        m_trade_history.push_back(new_trades[i]);
+
+    m_last_processed_tape_time = sData.tape.front().time;
+
+    // trim to max history
+    double cutoff = glfwGetTime() - (double)(m_max_history_hrs * 3600.0f);
+    while (!m_trade_history.empty() && m_trade_history.front().glfw_time < cutoff)
+        m_trade_history.pop_front();
+}
+
 // ─── AXES SETUP ──────────────────────────────────────────────────────────────
 
 void HeatmapModule::setup_axes(double y_min, double y_max, double y_range, float pre_plot_h)
@@ -155,8 +183,8 @@ void HeatmapModule::draw_trail()
     if (m_history.size() < 2) return;
  
     ImDrawList* dl      = ImPlot::GetPlotDrawList();
-    ImU32       bid_col = ImGui::ColorConvertFloat4ToU32(ImVec4(m_bid_color.x, m_bid_color.y, m_bid_color.z, 0.85f));
-    ImU32       ask_col = ImGui::ColorConvertFloat4ToU32(ImVec4(m_ask_color.x, m_ask_color.y, m_ask_color.z, 0.85f));
+    ImU32       ask_col = ImGui::ColorConvertFloat4ToU32(ImVec4(m_bid_color.x, m_bid_color.y, m_bid_color.z, 0.85f));
+    ImU32       bid_col = ImGui::ColorConvertFloat4ToU32(ImVec4(m_ask_color.x, m_ask_color.y, m_ask_color.z, 0.85f));
     double      tick    = (double)m_tick_size;
  
     ImPlot::PushPlotClipRect();
@@ -172,25 +200,60 @@ void HeatmapModule::draw_trail()
         double ask_c = bid_c + tick;
  
         // Horizontal segments
-        dl->AddLine(ImPlot::PlotToPixels(prev.time, bid_p), ImPlot::PlotToPixels(curr.time, bid_p), bid_col, 1.5f);
-        dl->AddLine(ImPlot::PlotToPixels(prev.time, ask_p), ImPlot::PlotToPixels(curr.time, ask_p), ask_col, 1.5f);
+        dl->AddLine(ImPlot::PlotToPixels(prev.time, bid_p), ImPlot::PlotToPixels(curr.time, bid_p), bid_col, m_lines_thickness);
+        dl->AddLine(ImPlot::PlotToPixels(prev.time, ask_p), ImPlot::PlotToPixels(curr.time, ask_p), ask_col, m_lines_thickness);
  
         // Vertical connectors on row change
         if (bid_p != bid_c)
         {
-            dl->AddLine(ImPlot::PlotToPixels(curr.time, bid_p), ImPlot::PlotToPixels(curr.time, bid_c), bid_col, 1.5f);
-            dl->AddLine(ImPlot::PlotToPixels(curr.time, ask_p), ImPlot::PlotToPixels(curr.time, ask_c), ask_col, 1.5f);
+            dl->AddLine(ImPlot::PlotToPixels(curr.time, bid_p), ImPlot::PlotToPixels(curr.time, bid_c), bid_col, m_lines_thickness);
+            dl->AddLine(ImPlot::PlotToPixels(curr.time, ask_p), ImPlot::PlotToPixels(curr.time, ask_c), ask_col, m_lines_thickness);
         }
     }
     ImPlot::PopPlotClipRect();
 }
  
-void HeatmapModule::draw_live_lines(const SymbolData& sData, const MarketData& data)
+void HeatmapModule::draw_live_lines(const SymbolData& sData)
 {
     double x_from = m_extend_lines_full ? -1.0
                   : (!m_history.empty() ? m_history.back().time : -1.0);
     CommonRender::draw_bid_ask_lines(sData.last_best_bid, sData.last_best_ask,
-                                     (double)m_tick_size, m_bid_color, m_ask_color, x_from);
+                                     (double)m_tick_size, m_ask_color, m_bid_color, m_lines_thickness, x_from);
+}
+
+void HeatmapModule::draw_bubbles()
+{
+    if (m_trade_history.empty()) return;
+
+    ImDrawList* dl       = ImPlot::GetPlotDrawList();
+    ImU32       buy_col  = ImGui::ColorConvertFloat4ToU32(ImVec4(m_ask_color.x, m_ask_color.y, m_ask_color.z, 0.80f));
+    ImU32       sell_col = ImGui::ColorConvertFloat4ToU32(ImVec4(m_bid_color.x, m_bid_color.y, m_bid_color.z, 0.80f));
+    double      tick     = (double)m_tick_size;
+
+    ImPlot::PushPlotClipRect();
+    for (auto& t : m_trade_history)
+    {
+        if (t.glfw_time < m_x_min || t.glfw_time > m_x_max) continue;
+ 
+        // Snap to tick row midpoint
+        double price_y = std::floor(t.price / tick) * tick + tick * 0.5;
+        ImVec2 center  = ImPlot::PlotToPixels(t.glfw_time, price_y);
+ 
+        // Radius: sqrt scaling so a 4x trade is 2x bigger, not 4x
+        float radius = std::min(
+            (float)std::sqrt(t.qty / (double)m_min_bubble_size) * m_bubble_size,
+            m_bubble_size * m_bubble_ratio);
+        if (radius < 1.5f) radius = 1.5f;
+ 
+        ImU32 col = t.is_sell ? sell_col : buy_col;
+        dl->AddCircleFilled(center, radius, col);
+        // Thin border for small bubbles to keep them visible
+        dl->AddCircle(center, radius, ImGui::ColorConvertFloat4ToU32(
+            ImVec4(t.is_sell ? m_bid_color.x : m_ask_color.x,
+                   t.is_sell ? m_bid_color.y : m_ask_color.y,
+                   t.is_sell ? m_bid_color.z : m_ask_color.z, 0.5f)), 0, 1.0f);
+    }
+    ImPlot::PopPlotClipRect();
 }
 
 // ─── MAIN UPDATE ─────────────────────────────────────────────────────────────
@@ -205,6 +268,7 @@ void HeatmapModule::update_content(MarketData& data)
  
     double now = glfwGetTime();
     sample_bid_ask(sData.last_best_bid, sData.last_best_ask, now);
+    ingest_trades(sData);
  
     // Symbol change — clear stale history
     if (current_symbol != m_last_symbol)
@@ -213,12 +277,13 @@ void HeatmapModule::update_content(MarketData& data)
         m_follow_price     = true;
         m_history.clear();
         m_last_sample_time = 0.0;
+        m_last_processed_tape_time   = 0.0;
         m_x_min = m_x_max = m_y_center = 0.0;
     }
  
     // Cache colors for sub-functions
-    m_bid_color = data.ask_color;
-    m_ask_color = data.bid_color;
+    m_bid_color = data.bid_color;
+    m_ask_color = data.ask_color;
  
     double mid     = (sData.last_best_bid + sData.last_best_ask) * 0.5;
     double y_range = (double)m_visible_rows * (double)m_tick_size;
@@ -250,11 +315,9 @@ void HeatmapModule::update_content(MarketData& data)
     setup_axes(y_min, y_max, y_range, pre_plot_h);
     handle_interaction(y_range);
     draw_grid(y_range);
-    draw_trail();
-    draw_live_lines(sData, data);
- 
-    if (m_show_crosshair)
-        CommonRender::draw_custom_crosshair(data.crosshair_color);
+    if (m_show_bubbles)      draw_bubbles();
+    if (m_show_best_bid_ask) { draw_trail(); draw_live_lines(sData); }
+    if (m_show_crosshair) CommonRender::draw_custom_crosshair(data.crosshair_color);
  
     ImPlot::EndPlot();
 }
@@ -296,12 +359,35 @@ void HeatmapModule::draw_settings_content(MarketData& data)
     ImGui::SliderFloat("Max History (hrs)", &m_max_history_hrs,  0.5f,    8.0f, "%.1f h");
     ImGui::SetNextItemWidth(160);
     ImGui::SliderFloat("Sample Rate (ms)",  &m_sample_rate_ms,  50.0f, 1000.0f, "%.0f ms");
+
+    ImGui::Separator(); ImGui::Spacing();
+    ImGui::TextDisabled("Bubbles");
+    ImGui::Checkbox("Show Bubbles", &m_show_bubbles);
+    ImGui::BeginDisabled(!m_show_bubbles);
+    ImGui::SetNextItemWidth(160);
+    ImGui::SliderFloat("Min Size",       &m_min_bubble_size, 0.1f,  50.0f, "%.1f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Minimum trade qty to draw a bubble.");
+    ImGui::SetNextItemWidth(160);
+    ImGui::SliderFloat("Bubble Size (px)", &m_bubble_size,  1.0f,  20.0f, "%.0f px");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Bubble Size (base radius for minimum-size trades).");
+    ImGui::SetNextItemWidth(160);
+    ImGui::SliderFloat("Size Ratio",  &m_bubble_ratio,   2.0f,  20.0f, "%.0f px");
+    if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Max radius = size x ratio.");
+    ImGui::EndDisabled();
  
     ImGui::Separator(); 
     ImGui::Spacing();
     ImGui::TextDisabled("Display");
+    ImGui::Checkbox("Show Best Bid/Ask", &m_show_best_bid_ask);
+    ImGui::SetNextItemWidth(160);
+    ImGui::SliderFloat("Best bid/Ask Thickness",  &m_lines_thickness,   1.5f,  4.0f, "%.1f");
+    ImGui::BeginDisabled(!m_show_best_bid_ask);
+    ImGui::Checkbox("Extend Lines Full Width", &m_extend_lines_full);
+    ImGui::EndDisabled();
     ImGui::Checkbox("Show Crosshair",             &m_show_crosshair);
-    ImGui::Checkbox("Extend Bid/Ask Lines Full",  &m_extend_lines_full);
     ImGui::Checkbox("Follow Price", &m_follow_price);
     ImGui::ColorEdit4("Tick Grid", &tick_grid_color.x);
  
@@ -310,15 +396,20 @@ void HeatmapModule::draw_settings_content(MarketData& data)
     if (ImGui::Button("Clear History", ImVec2(-1, 0)))
     {
         m_history.clear();
-        m_last_sample_time = 0.0;
+        m_trade_history.clear();
+        m_last_sample_time         = 0.0;
+        m_last_processed_tape_time = 0.0;
     }
 }
 
 void HeatmapModule::render_module_specific_header(MarketData& data)
 {
-    ImGui::SameLine(0, 80); 
-
-    // FOLLOW PRICE TOGGLE
+    const float slim_pad = 1.0f;
+    const float slim_h   = ImGui::GetTextLineHeight() + slim_pad * 2.0f;
+    // Buttons: just SameLine — cursor Y already correct from common header's v_off
+    ImGui::SameLine(0, 70);
+    ImGui::TextDisabled("|");
+    ImGui::SameLine(0, 20);
     bool was_follow = m_follow_price;
     if (was_follow) 
     {
@@ -340,34 +431,16 @@ void HeatmapModule::render_module_specific_header(MarketData& data)
     if (ImGui::Button(ICON_FA_TRASH, ImVec2(30, 0))) 
     {
         m_history.clear();
-        m_last_sample_time = 0.0;
+        m_trade_history.clear();
+        m_last_sample_time         = 0.0;
+        m_last_processed_tape_time = 0.0;
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clear Heatmap History");
 
     // QUICK TICK SIZE SHORTCUT
-    ImGui::SameLine(0, 15);
-    /*ImGui::TextDisabled("Tick:");
-    ImGui::SameLine(0, 5);
-    ImGui::SetNextItemWidth(65);
-    char preview_buf[16];
-    sprintf(preview_buf, "%g", m_tick_size);
-    if (ImGui::BeginCombo("##QuickTick", preview_buf, ImGuiComboFlags_NoArrowButton))
-    {
-        // Use the same values as your settings for consistency
-        float quick_vals[] = { 0.01f, 0.05f, 0.10f, 0.50f, 1.0f, 5.0f, 10.0f };
-        for (float v : quick_vals)
-        {
-            char label[16];
-            sprintf(label, "%g", v); // Correctly format 0.1, 0.5 etc.
-            
-            if (ImGui::Selectable(label, m_tick_size == v))
-            {
-                m_tick_size = v;
-                m_follow_price = true; // Auto-center when changing scale
-            }
-        }
-        ImGui::EndCombo();
-    }*/
+    ImGui::SameLine(0, 20); 
+    ImGui::TextDisabled("|");
+    ImGui::SameLine(0, 20); 
     static const char* tick_labels[] = { "0.01","0.05","0.10","0.50","1.0","5.0","10.0","50.0","100.0" };
     static float       tick_values[] = { 0.01f, 0.05f, 0.10f, 0.50f, 1.0f, 5.0f, 10.0f, 50.0f, 100.0f };
     int cur_tick = 4; // default 1.0
@@ -380,4 +453,38 @@ void HeatmapModule::render_module_specific_header(MarketData& data)
         m_follow_price = true;
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tick Size");
+
+    // BUBBLES SETTINGS (slim, stacked, naturally at top_y)
+    ImGui::SameLine(0, 20); 
+    ImGui::TextDisabled("|");
+    ImGui::SameLine(0, 20); 
+    //ImGui::SetCursorPosY(m_header_top_y + 2);
+    //ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, slim_pad));
+    float gx       = ImGui::GetCursorPosX();
+    float icon_w   = ImGui::CalcTextSize(ICON_FA_CIRCLE).x + 4.0f;
+    float slider_w = 110.0f;
+    float row2_y   = m_header_top_y + slim_h + ImGui::GetStyle().ItemSpacing.y;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, slim_pad));
+    ImGui::BeginGroup();
+    // Row 1: icon + size slider — absolutely positioned
+        ImGui::SetCursorPos({gx, m_header_top_y});
+        ImGui::TextDisabled(ICON_FA_CIRCLE);
+        ImGui::SetCursorPos({gx + icon_w, m_header_top_y});
+        ImGui::SetNextItemWidth(slider_w);
+        ImGui::SliderFloat("##BubSize", &m_bubble_size, 1.0f, 20.0f, "%.0f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bubble Size");
+
+        // Row 2: icon + ratio slider — absolutely positioned
+        ImGui::SetCursorPos({gx, row2_y});
+        ImGui::TextDisabled(ICON_FA_EXPAND_ALT);
+        ImGui::SetCursorPos({gx + icon_w, row2_y});
+        ImGui::SetNextItemWidth(slider_w);
+        ImGui::SliderFloat("##BubRatio", &m_bubble_ratio, 2.0f, 20.0f, "%.0fx");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Size Ratio");
+    ImGui::EndGroup();
+    ImGui::PopStyleVar();
+
+    ImGui::SameLine(0, 20); 
+    ImGui::TextDisabled("|");
 }

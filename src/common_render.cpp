@@ -129,7 +129,7 @@ namespace CommonRender
     
         ImPlot::PopPlotClipRect();
     }*/
-    void draw_bid_ask_lines(double best_bid, double best_ask, double tick_size, ImVec4 bid_color, ImVec4 ask_color, double x_from)
+    void draw_bid_ask_lines(double best_bid, double best_ask, double tick_size, ImVec4 bid_color, ImVec4 ask_color, double thickness, double x_from)
     {
         if (best_bid <= 0.0 || best_ask <= 0.0 || tick_size <= 0.0) return;
     
@@ -153,16 +153,14 @@ namespace CommonRender
             ImVec2 e = ImPlot::PlotToPixels(limits.X.Max, price);
             ImU32  c = ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, 0.9f));
             for (float x = s.x; x < e.x; x += dash + gap)
-                dl->AddLine(ImVec2(x, s.y), ImVec2(std::min(x + dash, e.x), s.y), c, 1.5f);
+                dl->AddLine(ImVec2(x, s.y), ImVec2(std::min(x + dash, e.x), s.y), c, thickness);
         };
     
         draw_dashed(bid_snapped, bid_color);
         draw_dashed(ask_snapped, ask_color);
     
         ImPlot::PopPlotClipRect();
-    
-        //ImPlot::TagY(best_bid, bid_color, "B %.2f", best_bid);
-        //ImPlot::TagY(best_ask, ask_color, "A %.2f", best_ask);
+
         ImPlot::TagY(bid_snapped, bid_color, "B %.1f", best_bid);
         ImPlot::TagY(ask_snapped, ask_color, "A %.1f", best_ask);
     }

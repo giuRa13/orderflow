@@ -23,6 +23,13 @@ void BaseModule::render_standalone(MarketData& data)
 
 void BaseModule::render_common_header(MarketData& data) 
 {
+    m_header_top_y = ImGui::GetCursorPosY(); // original line top, before any items
+    float group_h   = module_header_height();
+    float regular_h = ImGui::GetFrameHeight();
+    float v_off     = std::max(0.0f, (group_h - regular_h) * 0.5f);
+    auto vertical_center = [&]() { ImGui::SetCursorPosY(m_header_top_y + v_off); };
+
+    vertical_center();
     ImGui::SetNextItemWidth(100);
     if (ImGui::InputText("##Sym", symbol_input, sizeof(symbol_input), ImGuiInputTextFlags_EnterReturnsTrue)) 
     {
@@ -31,6 +38,7 @@ void BaseModule::render_common_header(MarketData& data)
         current_symbol = input_str;
     }
     ImGui::SameLine(0, 2);
+    vertical_center();
     if (ImGui::Button(ICON_FA_SEARCH)) 
     {
         std::string input_str = symbol_input;
@@ -39,6 +47,7 @@ void BaseModule::render_common_header(MarketData& data)
     }
 
     ImGui::SameLine();
+    vertical_center();
     std::string upper = current_symbol;
     std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
     ImGui::TextDisabled("| %s", upper.c_str());
@@ -52,6 +61,7 @@ void BaseModule::render_common_header(MarketData& data)
     if (ImGui::GetScrollMaxY() > 0) right_edge -= ImGui::GetStyle().ScrollbarSize;
     
     ImGui::SameLine(right_edge);
+    vertical_center();
     if (ImGui::Button(ICON_FA_COG, ImVec2(30, 0))) 
     {
         open_settings = !open_settings;
